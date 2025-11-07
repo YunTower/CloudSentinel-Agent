@@ -53,12 +53,15 @@ func sendAuthMessage(client *websocket.Client, cfg config.Config, logger *logger
 		Data: authData,
 	}
 	
-	// 调试：记录发送的认证信息（不记录完整的key，只记录前4个字符）
 	keyPreview := cfg.Key
 	if len(keyPreview) > 8 {
 		keyPreview = keyPreview[:8] + "..."
 	}
-	logger.Info("准备发送认证消息，key: %s", keyPreview)
+	
+	// 验证 key 长度（UUID 格式应该是 36 个字符）
+	if len(cfg.Key) != 36 {
+		logger.Warn("警告: agent key 长度异常 (%d)，正常应该是 36 个字符", len(cfg.Key))
+	}
 	
 	if err := client.SendMessage(authMessage); err != nil {
 		logger.Error("发送认证消息失败: %v", err)

@@ -71,14 +71,15 @@ func (c *Client) ConnectWithRetry() error {
 				return fmt.Errorf("达到最大重连次数(%d): %v", c.MaxReconnect, err)
 			}
 			
-			c.Logger.Warn("连接失败(尝试 %d/%d): %v，%v秒后重试...", 
+			// 格式化最大重连次数显示
+			maxReconnectStr := "∞"
+			if c.MaxReconnect > 0 {
+				maxReconnectStr = fmt.Sprintf("%d", c.MaxReconnect)
+			}
+			
+			c.Logger.Warn("连接失败(尝试 %d/%s): %v，%.0f秒后重试...", 
 				attempts, 
-				func() interface{} {
-					if c.MaxReconnect == 0 {
-						return "∞"
-					}
-					return c.MaxReconnect
-				}(), 
+				maxReconnectStr,
 				err, 
 				c.ReconnectWait.Seconds())
 			
