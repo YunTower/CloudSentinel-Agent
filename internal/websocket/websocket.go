@@ -44,12 +44,12 @@ func (c *Client) Connect() error {
 	if err != nil {
 		return fmt.Errorf("连接失败: %v", err)
 	}
-	
+
 	c.mu.Lock()
 	c.Conn = conn
 	c.IsConnected = true
 	c.mu.Unlock()
-	
+
 	return nil
 }
 
@@ -65,24 +65,24 @@ func (c *Client) ConnectWithRetry() error {
 				c.Logger.Success("WebSocket 连接成功")
 				return nil
 			}
-			
+
 			attempts++
 			if c.MaxReconnect > 0 && attempts >= c.MaxReconnect {
 				return fmt.Errorf("达到最大重连次数(%d): %v", c.MaxReconnect, err)
 			}
-			
+
 			// 格式化最大重连次数显示
-			maxReconnectStr := "∞"
+			maxReconnectStr := 5
 			if c.MaxReconnect > 0 {
-				maxReconnectStr = fmt.Sprintf("%d", c.MaxReconnect)
+				maxReconnectStr, _ = fmt.Printf("%d", c.MaxReconnect)
 			}
-			
-			c.Logger.Warn("连接失败(尝试 %d/%s): %v，%.0f秒后重试...", 
-				attempts, 
+
+			c.Logger.Warn("连接失败(尝试 %d/%s): %v，%.0f秒后重试...",
+				attempts,
 				maxReconnectStr,
-				err, 
+				err,
 				c.ReconnectWait.Seconds())
-			
+
 			time.Sleep(c.ReconnectWait)
 		}
 	}
@@ -95,7 +95,7 @@ func (c *Client) Reconnect() error {
 	}
 	c.IsConnected = false
 	c.mu.Unlock()
-	
+
 	c.Logger.Warn("开始重新连接...")
 	return c.ConnectWithRetry()
 }
@@ -104,7 +104,7 @@ func (c *Client) StartHeartbeat() {
 	c.heartbeatStop = make(chan struct{})
 	ticker := time.NewTicker(20 * time.Second)
 	defer ticker.Stop()
-	
+
 	for {
 		select {
 		case <-ticker.C:
@@ -128,34 +128,34 @@ func (c *Client) StopHeartbeat() {
 func (c *Client) SendMessage(content interface{}) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	
+
 	if !c.IsConnected || c.Conn == nil {
 		return fmt.Errorf("未连接")
 	}
-	
+
 	data, err := json.Marshal(content)
 	if err != nil {
 		c.Logger.Error("将内容转换为 JSON 时出错: %v", err)
 		return err
 	}
-	
+
 	err = c.Conn.WriteMessage(websocket.TextMessage, data)
 	if err != nil {
 		c.Logger.Error("发送消息时出错: %v", err)
 		c.IsConnected = false
 		return err
 	}
-	
+
 	return nil
 }
 
 func (c *Client) Close() {
 	close(c.stopChan)
 	c.StopHeartbeat()
-	
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	
+
 	if c.Conn != nil {
 		c.Conn.Close()
 	}
