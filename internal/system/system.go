@@ -2,14 +2,15 @@ package system
 
 import (
 	"agent/internal/logger"
+	"io"
+	"net/http"
+	"time"
+
 	"github.com/shirou/gopsutil/cpu"
 	"github.com/shirou/gopsutil/disk"
 	"github.com/shirou/gopsutil/host"
 	"github.com/shirou/gopsutil/mem"
 	"github.com/shirou/gopsutil/net"
-	"io/ioutil"
-	"net/http"
-	"time"
 )
 
 type System struct {
@@ -88,8 +89,8 @@ func (s *System) GetDiskAllPart() []disk.PartitionStat {
 }
 
 // GetDiskIO 获取所有硬盘的IO信息
-func (s *System) GetDiskIO() map[string]disk.IOCountersStat {
-	io, _ := disk.IOCounters()
+func (s *System) GetDiskIO(path string) map[string]disk.IOCountersStat {
+	io, _ := disk.IOCounters(path)
 	return io
 }
 
@@ -121,7 +122,7 @@ func (s *System) GetIpv4(log *logger.Logger) string {
 		}
 		defer resp.Body.Close()
 
-		ip, err := ioutil.ReadAll(resp.Body)
+		ip, err := io.ReadAll(resp.Body)
 		if err != nil {
 			log.Error("获取 %s 响应失败: %v\n", url, err)
 			continue

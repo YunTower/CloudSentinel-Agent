@@ -2,14 +2,13 @@ package reporter
 
 import (
 	"agent/config"
+	"agent/internal/collector"
 	"agent/internal/logger"
 	"agent/internal/system"
 	"agent/internal/websocket"
 	"encoding/json"
 	"fmt"
-	websocket2 "github.com/gorilla/websocket"
 	"io"
-	"runtime"
 	"time"
 )
 
@@ -28,71 +27,130 @@ type MemoryIo struct {
 }
 
 type DiskIo struct {
-	Path        string  `json:"path"`
-	Total       int     `json:"total"`
-	Free        int     `json:"free"`
-	Used        int     `json:"used"`
-	UsedPercent float64 `json:"used_percent"`
+	Name       string  `json:"name"`
+	ReadCount  uint64  `json:"read_count"`
+	WriteCount float64 `json:"write_count"`
+	ReadBytes  float64 `json:"read_bytes"`
+	WriteBytes float64 `json:"write_bytes"`
+	ReadTime   int     `json:"read_time"`
+	WriteTime  int     `json:"write_time"`
 }
 
-func StartReporter(conn *websocket2.Conn, system *system.System, logger *logger.Logger, cfg config.Config) {
+// sendAuthMessage 发送认证消息
+func sendAuthMessage(client *websocket.Client, cfg config.Config, logger *logger.Logger) {
+	// 验证key是否存在
+	if cfg.Key == "" {
+		logger.Error("agent key为空，无法发送认证消息")
+		return
+	}
+	
+	authData := map[string]interface{}{
+		"type": "server",
+		"key":  cfg.Key,
+	}
+	authMessage := websocket.Message{
+		Type: "auth",
+		Data: authData,
+	}
+	
+	// 调试：记录发送的认证信息（不记录完整的key，只记录前4个字符）
+	keyPreview := cfg.Key
+	if len(keyPreview) > 8 {
+		keyPreview = keyPreview[:8] + "..."
+	}
+	logger.Info("准备发送认证消息，key: %s", keyPreview)
+	
+	if err := client.SendMessage(authMessage); err != nil {
+		logger.Error("发送认证消息失败: %v", err)
+	} else {
+		logger.Info("已发送认证消息")
+	}
+}
+
+func StartReporter(client *websocket.Client, system *system.System, logger *logger.Logger, cfg config.Config) {
+	col := collector.NewCollector(system, logger, client)
+	isDataReportingStarted := false
+	
+	// 连接成功后立即发送认证消息
+	sendAuthMessage(client, cfg, logger)
+	
 	for {
+		conn := client.GetConnection()
+		if conn == nil {
+			logger.Error("连接不可用，尝试重连...")
+			if err := client.Reconnect(); err != nil {
+				logger.Error("重连失败: %v", err)
+				time.Sleep(5 * time.Second)
+				continue
+			}
+			isDataReportingStarted = false
+			conn = client.GetConnection()
+			// 重连成功后立即发送认证消息
+			sendAuthMessage(client, cfg, logger)
+		}
+		
 		_, message, err := conn.ReadMessage()
 		if err != nil {
 			if err == io.EOF {
 				logger.Warn("连接已关闭")
 			} else {
-				logger.Error(fmt.Sprintf("读取消息时出错: %v，消息内容：%v", err, message))
+				logger.Error(fmt.Sprintf("读取消息时出错: %v", err))
 			}
-			websocket.HandleDisconnect(conn, logger)
-			break
+			
+			client.IsConnected = false
+			logger.Warn("连接断开，尝试重连...")
+			
+			if err := client.Reconnect(); err != nil {
+				logger.Error("重连失败: %v", err)
+				time.Sleep(5 * time.Second)
+			} else {
+				isDataReportingStarted = false
+				// 重连成功后立即发送认证消息
+				sendAuthMessage(client, cfg, logger)
+			}
+			continue
 		}
 
 		logger.Info(fmt.Sprintf("收到消息: %s", message))
 		var jsonData map[string]interface{}
 		err = json.Unmarshal(message, &jsonData)
 		if err != nil {
-			logger.Error("解析JSON数据时出错:", err)
+			logger.Error("解析JSON数据时出错: %v", err)
 			continue
 		}
 
-		typeValue := jsonData["type"]
+		typeValue, _ := jsonData["type"].(string)
 		statusValue, statusExists := jsonData["status"].(string)
 		messageValue, messageExists := jsonData["message"].(string)
 
+		// 处理认证成功
 		if statusExists && typeValue == "auth" && statusValue == "success" {
 			logger.Success("认证成功")
+			
+			// 认证成功后启动数据收集（仅启动一次）
+			if !isDataReportingStarted {
+				isDataReportingStarted = true
+				go col.StartPeriodicReporting()
+			}
 		}
 
+		// 处理带状态和消息的响应
 		if statusExists && messageExists {
 			if statusValue != "success" {
-				logger.Warn("[%v][%v] %v", typeValue, statusValue, messageValue)
+				logger.Warn("%s: %s", typeValue, messageValue)
 			} else {
-				logger.Success("[%v][%v] %v", typeValue, statusValue, messageValue)
+				logger.Success("%s: %s", typeValue, messageValue)
 			}
-
-			if typeValue == "info" && statusValue == "success" {
-				// 开启IO定时上报
-				ticker := time.NewTicker(1 * time.Minute)
-				defer ticker.Stop()
-				go func() {
-					for range ticker.C {
-						reportSystemInfo(conn, system, logger)
-					}
-				}()
-			}
-
 		} else {
+			// 处理服务器请求
 			if !statusExists {
 				switch typeValue {
 				case "hello":
-					heartbeatMessage := websocket.Message{
-						Type: "hi",
-					}
-					websocket.SendMessage(heartbeatMessage, conn, logger)
-					break
+					// 服务器发送hello（心跳响应）
+					// logger.Info("收到心跳响应")
 				case "auth":
-					authData := map[string]string{
+					// 服务器要求认证（虽然agent会主动认证，但保留此逻辑作为备用）
+					authData := map[string]interface{}{
 						"type": "server",
 						"key":  cfg.Key,
 					}
@@ -100,86 +158,55 @@ func StartReporter(conn *websocket2.Conn, system *system.System, logger *logger.
 						Type: "auth",
 						Data: authData,
 					}
-					websocket.SendMessage(authMessage, conn, logger)
-					break
-				case "info":
-					cpuInfo, _ := marshalJSON(system.GetCpuInfo(), logger)
-					memoryInfo := map[string]int{
-						"total": system.GetMemoryTotal(),
+					if err := client.SendMessage(authMessage); err != nil {
+						logger.Error("发送认证消息失败: %v", err)
+					} else {
+						logger.Info("已发送认证消息（响应服务器请求）")
 					}
-					memoryTotal, _ := marshalJSON(memoryInfo, logger)
-
-					var diskData []DiskIo
-					for _, item := range system.GetDiskAllPart() {
-						info := system.GetDiskUsage(item.Device)
-						diskData = append(diskData, DiskIo{
-							Path:        item.Device,
-							Total:       int(info.Total),
-							Free:        int(info.Free),
-							Used:        int(info.Used),
-							UsedPercent: info.UsedPercent,
-						})
-					}
-
-					DiskList, _ := marshalJSON(diskData, logger)
-
-					systemInfo := map[string]interface{}{
-						"cpu":    json.RawMessage(cpuInfo),
-						"memory": json.RawMessage(memoryTotal),
-						"disk":   json.RawMessage(DiskList),
-						"os":     runtime.GOOS,
-						"arch":   runtime.GOARCH,
-					}
-
-					infoMessage := websocket.Message{
-						Type: "info",
-						Data: systemInfo,
-					}
-					websocket.SendMessage(infoMessage, conn, logger)
-					break
 				default:
-					logger.Warn("未知的消息类型:", typeValue)
+					logger.Warn("未知的消息类型: %v", typeValue)
 				}
 			}
 		}
 	}
 }
 
-func reportSystemInfo(conn *websocket2.Conn, system *system.System, logger *logger.Logger) {
-	cpuInfo, _ := marshalJSON(system.GetCpuUsedPercent(), logger)
-	memoryInfo := map[string]int{
-		"total": system.GetMemoryTotal(),
-	}
-	memoryTotal, _ := marshalJSON(memoryInfo, logger)
-
-	var diskData []DiskIo
-	for _, item := range system.GetDiskAllPart() {
-		info := system.GetDiskUsage(item.Device)
-		diskData = append(diskData, DiskIo{
-			Path:        item.Device,
-			Total:       int(info.Total),
-			Free:        int(info.Free),
-			Used:        int(info.Used),
-			UsedPercent: info.UsedPercent,
-		})
-	}
-
-	DiskList, _ := marshalJSON(diskData, logger)
-
-	systemInfo := map[string]interface{}{
-		"cpu":    json.RawMessage(cpuInfo),
-		"memory": json.RawMessage(memoryTotal),
-		"disk":   json.RawMessage(DiskList),
-		"os":     runtime.GOOS,
-		"arch":   runtime.GOARCH,
-	}
-
-	content := websocket.Message{
-		Type: "info",
-		Data: systemInfo,
-	}
-	websocket.SendMessage(content, conn, logger)
-}
+//func reportSystemStatus(conn *websocket2.Conn, system *system.System, logger *logger.Logger) {
+//	cpuStatus, _ := marshalJSON(system.GetCpuUsedPercent(), logger)
+//	_memoryStatus := map[string]int{
+//		"total":        system.GetMemoryTotal(),
+//		"used":         system.GetMemoryUsed(),
+//		"used_percent": system.GetMemoryUsedPercent(),
+//		"free":         system.GetMemoryFree(),
+//	}
+//	memoryStatus, _ := marshalJSON(_memoryStatus, logger)
+//
+//	var _diskData []DiskIo
+//	for _, item := range system.GetDiskAllPart() {
+//		info := system.GetDiskIO(item.Device)
+//		_diskData = append(_diskData, DiskIo{
+//			Path:        item.Device,
+//			Total:       int(info.Total),
+//			Free:        int(info.Free),
+//			Used:        int(info.Used),
+//			UsedPercent: info.UsedPercent,
+//		})
+//	}
+//	diskData, _ := marshalJSON(_diskData, logger)
+//	systemStatus := map[string]interface{}{
+//		"cpu":    json.RawMessage(cpuStatus),
+//		"memory": json.RawMessage(memoryStatus),
+//		"disk":   json.RawMessage(diskData),
+//		"os":     runtime.GOOS,
+//		"arch":   runtime.GOARCH,
+//	}
+//
+//	content := websocket.Message{
+//		Type: "status",
+//		Data: systemStatus,
+//	}
+//	websocket.SendMessage(content, conn, logger)
+//}
 
 func marshalJSON(data interface{}, logger *logger.Logger) ([]byte, error) {
 	jsonData, err := json.Marshal(data)
