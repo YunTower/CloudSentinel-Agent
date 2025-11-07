@@ -72,9 +72,9 @@ func (c *Client) ConnectWithRetry() error {
 			}
 
 			// 格式化最大重连次数显示
-			maxReconnectStr := 5
+			maxReconnectStr := "∞"
 			if c.MaxReconnect > 0 {
-				maxReconnectStr, _ = fmt.Printf("%d", c.MaxReconnect)
+				maxReconnectStr = fmt.Sprintf("%d", c.MaxReconnect)
 			}
 
 			c.Logger.Warn("连接失败(尝试 %d/%s): %v，%.0f秒后重试...",
