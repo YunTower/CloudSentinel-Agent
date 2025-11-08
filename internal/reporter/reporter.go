@@ -7,8 +7,8 @@ import (
 	"agent/internal/system"
 	"agent/internal/websocket"
 	"encoding/json"
-	"fmt"
 	"io"
+	"os"
 	"time"
 )
 
@@ -43,7 +43,7 @@ func sendAuthMessage(client *websocket.Client, cfg config.Config, logger *logger
 		logger.Error("agent key为空，无法发送认证消息")
 		return
 	}
-	
+
 	authData := map[string]interface{}{
 		"type": "server",
 		"key":  cfg.Key,
@@ -52,31 +52,24 @@ func sendAuthMessage(client *websocket.Client, cfg config.Config, logger *logger
 		Type: "auth",
 		Data: authData,
 	}
-	
-	keyPreview := cfg.Key
-	if len(keyPreview) > 8 {
-		keyPreview = keyPreview[:8] + "..."
-	}
-	
-	// 验证 key 长度（UUID 格式应该是 36 个字符）
+
+	// 验证 key 长度
 	if len(cfg.Key) != 36 {
 		logger.Warn("警告: agent key 长度异常 (%d)，正常应该是 36 个字符", len(cfg.Key))
 	}
-	
+
 	if err := client.SendMessage(authMessage); err != nil {
 		logger.Error("发送认证消息失败: %v", err)
-	} else {
-		logger.Info("已发送认证消息")
 	}
 }
 
 func StartReporter(client *websocket.Client, system *system.System, logger *logger.Logger, cfg config.Config) {
 	col := collector.NewCollector(system, logger, client)
 	isDataReportingStarted := false
-	
+
 	// 连接成功后立即发送认证消息
 	sendAuthMessage(client, cfg, logger)
-	
+
 	for {
 		conn := client.GetConnection()
 		if conn == nil {
@@ -91,18 +84,17 @@ func StartReporter(client *websocket.Client, system *system.System, logger *logg
 			// 重连成功后立即发送认证消息
 			sendAuthMessage(client, cfg, logger)
 		}
-		
+
 		_, message, err := conn.ReadMessage()
 		if err != nil {
 			if err == io.EOF {
 				logger.Warn("连接已关闭")
 			} else {
-				logger.Error(fmt.Sprintf("读取消息时出错: %v", err))
+				logger.Error("读取消息时出错: %v", err)
 			}
-			
+
 			client.IsConnected = false
-			logger.Warn("连接断开，尝试重连...")
-			
+
 			if err := client.Reconnect(); err != nil {
 				logger.Error("重连失败: %v", err)
 				time.Sleep(5 * time.Second)
@@ -114,7 +106,6 @@ func StartReporter(client *websocket.Client, system *system.System, logger *logg
 			continue
 		}
 
-		logger.Info(fmt.Sprintf("收到消息: %s", message))
 		var jsonData map[string]interface{}
 		err = json.Unmarshal(message, &jsonData)
 		if err != nil {
@@ -129,7 +120,7 @@ func StartReporter(client *websocket.Client, system *system.System, logger *logg
 		// 处理认证成功
 		if statusExists && typeValue == "auth" && statusValue == "success" {
 			logger.Success("认证成功")
-			
+
 			// 认证成功后启动数据收集（仅启动一次）
 			if !isDataReportingStarted {
 				isDataReportingStarted = true
@@ -141,18 +132,40 @@ func StartReporter(client *websocket.Client, system *system.System, logger *logg
 		if statusExists && messageExists {
 			if statusValue != "success" {
 				logger.Warn("%s: %s", typeValue, messageValue)
-			} else {
-				logger.Success("%s: %s", typeValue, messageValue)
 			}
 		} else {
 			// 处理服务器请求
 			if !statusExists {
 				switch typeValue {
-				case "hello":
-					// 服务器发送hello（心跳响应）
-					// logger.Info("收到心跳响应")
+				case "command":
+					// 处理服务器命令
+					commandData, ok := jsonData["command"].(string)
+					if ok {
+						if commandData == "restart" {
+							logger.Info("收到重启命令，准备重启...")
+							// 发送确认消息
+							response := websocket.Message{
+								Type: "command_response",
+								Data: map[string]interface{}{
+									"command": "restart",
+									"status":  "success",
+									"message": "正在重启...",
+								},
+							}
+							if err := client.SendMessage(response); err != nil {
+								logger.Error("发送重启确认消息失败: %v", err)
+							}
+							// 延迟一小段时间确保消息发送成功
+							time.Sleep(500 * time.Millisecond)
+							// TODO: 退出程序，由系统服务管理器（如systemd）自动重启
+							logger.Info("退出程序，等待系统服务管理器重启...")
+							os.Exit(0)
+						} else {
+							logger.Warn("未知的命令: %s", commandData)
+						}
+					}
 				case "auth":
-					// 服务器要求认证（虽然agent会主动认证，但保留此逻辑作为备用）
+					// 服务器要求认证
 					authData := map[string]interface{}{
 						"type": "server",
 						"key":  cfg.Key,
@@ -163,8 +176,6 @@ func StartReporter(client *websocket.Client, system *system.System, logger *logg
 					}
 					if err := client.SendMessage(authMessage); err != nil {
 						logger.Error("发送认证消息失败: %v", err)
-					} else {
-						logger.Info("已发送认证消息（响应服务器请求）")
 					}
 				default:
 					logger.Warn("未知的消息类型: %v", typeValue)
@@ -172,50 +183,4 @@ func StartReporter(client *websocket.Client, system *system.System, logger *logg
 			}
 		}
 	}
-}
-
-//func reportSystemStatus(conn *websocket2.Conn, system *system.System, logger *logger.Logger) {
-//	cpuStatus, _ := marshalJSON(system.GetCpuUsedPercent(), logger)
-//	_memoryStatus := map[string]int{
-//		"total":        system.GetMemoryTotal(),
-//		"used":         system.GetMemoryUsed(),
-//		"used_percent": system.GetMemoryUsedPercent(),
-//		"free":         system.GetMemoryFree(),
-//	}
-//	memoryStatus, _ := marshalJSON(_memoryStatus, logger)
-//
-//	var _diskData []DiskIo
-//	for _, item := range system.GetDiskAllPart() {
-//		info := system.GetDiskIO(item.Device)
-//		_diskData = append(_diskData, DiskIo{
-//			Path:        item.Device,
-//			Total:       int(info.Total),
-//			Free:        int(info.Free),
-//			Used:        int(info.Used),
-//			UsedPercent: info.UsedPercent,
-//		})
-//	}
-//	diskData, _ := marshalJSON(_diskData, logger)
-//	systemStatus := map[string]interface{}{
-//		"cpu":    json.RawMessage(cpuStatus),
-//		"memory": json.RawMessage(memoryStatus),
-//		"disk":   json.RawMessage(diskData),
-//		"os":     runtime.GOOS,
-//		"arch":   runtime.GOARCH,
-//	}
-//
-//	content := websocket.Message{
-//		Type: "status",
-//		Data: systemStatus,
-//	}
-//	websocket.SendMessage(content, conn, logger)
-//}
-
-func marshalJSON(data interface{}, logger *logger.Logger) ([]byte, error) {
-	jsonData, err := json.Marshal(data)
-	if err != nil {
-
-		logger.Error("序列化数据时出错: %v", err)
-	}
-	return jsonData, err
 }

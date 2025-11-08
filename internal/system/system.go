@@ -106,6 +106,20 @@ func (s *System) GetNetIO() []net.ConnectionStat {
 	return netInfo
 }
 
+// GetNetIOCounters 获取网络IO计数器（用于计算网络速度）
+func (s *System) GetNetIOCounters() (map[string]net.IOCountersStat, error) {
+	counters, err := net.IOCounters(true) // true表示获取所有网络接口
+	if err != nil {
+		return nil, err
+	}
+
+	result := make(map[string]net.IOCountersStat)
+	for _, counter := range counters {
+		result[counter.Name] = counter
+	}
+	return result, nil
+}
+
 // GetIpv4 获取本机ipv4地址
 func (s *System) GetIpv4(log *logger.Logger) string {
 	urls := []string{
