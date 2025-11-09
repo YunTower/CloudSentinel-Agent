@@ -41,8 +41,18 @@ func NewCollector(sys *system.System, log *logger.Logger, client *websocket.Clie
 // SendSystemInfo 发送系统基础信息
 func (c *Collector) SendSystemInfo() error {
 	hostInfo := c.System.GetHostInfo()
+	bootTimeUnix, err := c.System.GetBootTime()
+	if err != nil {
+		c.Logger.Warn("获取系统启动时间失败: %v", err)
+		bootTimeUnix = 0
+	}
 
-	bootTime := time.Unix(int64(hostInfo.BootTime), 0)
+	var bootTime time.Time
+	if bootTimeUnix > 0 {
+		bootTime = time.Unix(int64(bootTimeUnix), 0)
+	} else {
+		bootTime = time.Now()
+	}
 
 	systemData := map[string]interface{}{
 		"agent_version": agentVersion,

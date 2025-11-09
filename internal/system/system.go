@@ -22,6 +22,11 @@ func (s *System) GetHostInfo() *host.InfoStat {
 	return h
 }
 
+// GetBootTime 获取系统启动时间
+func (s *System) GetBootTime() (uint64, error) {
+	return host.BootTime()
+}
+
 // GetMemoryTotal 总内存
 func (s *System) GetMemoryTotal() int {
 	v, _ := mem.VirtualMemory()
