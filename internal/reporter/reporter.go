@@ -70,6 +70,10 @@ func StartReporter(client *websocket.Client, system *system.System, logger *logg
 	// 连接成功后立即发送认证消息
 	sendAuthMessage(client, cfg, logger)
 
+	// 在 goroutine 中启动心跳
+	go client.StartHeartbeat()
+
+	// 消息读取循环
 	for {
 		conn := client.GetConnection()
 		if conn == nil {
@@ -83,7 +87,12 @@ func StartReporter(client *websocket.Client, system *system.System, logger *logg
 			conn = client.GetConnection()
 			// 重连成功后立即发送认证消息
 			sendAuthMessage(client, cfg, logger)
+			// 重启心跳
+			go client.StartHeartbeat()
 		}
+
+		// 设置读取超时，防止阻塞
+		conn.SetReadDeadline(time.Now().Add(90 * time.Second))
 
 		_, message, err := conn.ReadMessage()
 		if err != nil {
@@ -97,11 +106,16 @@ func StartReporter(client *websocket.Client, system *system.System, logger *logg
 
 			if err := client.Reconnect(); err != nil {
 				logger.Error("重连失败: %v", err)
-				time.Sleep(5 * time.Second)
+				logger.Error("已达最大重连次数，请检查网络连接或后端服务状态")
+				time.Sleep(60 * time.Second)
+				// 重置连接状态，允许下一轮重连
+				continue
 			} else {
 				isDataReportingStarted = false
 				// 重连成功后立即发送认证消息
 				sendAuthMessage(client, cfg, logger)
+				// 重启心跳
+				go client.StartHeartbeat()
 			}
 			continue
 		}

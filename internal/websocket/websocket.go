@@ -33,7 +33,7 @@ func NewClient(api string, logger *logger.Logger) *Client {
 		Logger:        logger,
 		IsConnected:   false,
 		ReconnectWait: 5 * time.Second,
-		MaxReconnect:  0, // 0表示无限重连
+		MaxReconnect:  5, // 最多重连5次
 		stopChan:      make(chan struct{}),
 		heartbeatStop: make(chan struct{}),
 	}
@@ -113,6 +113,8 @@ func (c *Client) StartHeartbeat() {
 			}
 			if err := c.SendMessage(heartbeatMessage); err != nil {
 				c.Logger.Error("心跳发送失败: %v", err)
+				// 心跳发送失败，触发重连
+				return
 			}
 		case <-c.heartbeatStop:
 			c.Logger.Info("心跳停止")
