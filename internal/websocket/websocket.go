@@ -100,15 +100,73 @@ func (c *Client) Reconnect() error {
 }
 
 // StartHeartbeat 启动心跳进程，使用 context 控制生命周期
-func (c *Client) StartHeartbeat(ctx context.Context, healthChan chan<- bool) {
-	ticker := time.NewTicker(20 * time.Second)
+func (c *Client) StartHeartbeat(ctx context.Context, healthChan chan<- bool, interval time.Duration) {
+	if interval <= 0 {
+		interval = 20 * time.Second // 默认20秒
+	}
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	c.Logger.Info("心跳进程：已启动")
 
+	// 在开始前检查连接状态
+	if !c.IsConnected || c.Conn == nil {
+		c.Logger.Warn("心跳进程：WebSocket 未连接，等待连接...")
+		// 等待连接或 context 取消
+		select {
+		case <-ctx.Done():
+			c.Logger.Info("心跳进程：已停止")
+			return
+		case <-time.After(5 * time.Second):
+			// 5秒后如果仍未连接，返回让进程管理器处理
+			c.Logger.Warn("心跳进程：等待连接超时，退出")
+			select {
+			case healthChan <- false:
+			default:
+			}
+			return
+		}
+	}
+
 	for {
 		select {
 		case <-ticker.C:
+			// 检查连接状态
+			if !c.IsConnected || c.Conn == nil {
+				c.Logger.Warn("心跳进程：连接已断开，等待重连...")
+				// 上报不健康状态
+				select {
+				case healthChan <- false:
+				default:
+				}
+				// 等待重连，最多等待30秒
+				reconnectTimeout := time.After(30 * time.Second)
+				checkTicker := time.NewTicker(5 * time.Second)
+
+				for {
+					select {
+					case <-ctx.Done():
+						checkTicker.Stop()
+						c.Logger.Info("心跳进程：已停止")
+						return
+					case <-reconnectTimeout:
+						// 30秒后如果仍未连接，返回让进程管理器处理
+						checkTicker.Stop()
+						c.Logger.Warn("心跳进程：等待重连超时，退出")
+						return
+					case <-checkTicker.C:
+						// 每5秒检查一次连接状态
+						if c.IsConnected && c.Conn != nil {
+							checkTicker.Stop()
+							c.Logger.Info("心跳进程：连接已恢复，继续心跳")
+							goto continueHeartbeat
+						}
+					}
+				}
+			continueHeartbeat:
+				continue
+			}
+
 			heartbeatMessage := Message{
 				Type: "hello",
 			}
@@ -119,7 +177,9 @@ func (c *Client) StartHeartbeat(ctx context.Context, healthChan chan<- bool) {
 				case healthChan <- false:
 				default:
 				}
-				return
+				// 发送失败时，不立即返回，继续等待下次 ticker
+				// 如果连接断开，会在下次检查时处理
+				continue
 			}
 			// 上报健康状态
 			select {

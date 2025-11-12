@@ -12,22 +12,26 @@ import (
 )
 
 type Config struct {
-	Server string `json:"server"`
-	Key    string `json:"key"`
-	LogPath string `json:"log_path"`
+	Server            string `json:"server"`
+	Key               string `json:"key"`
+	LogPath           string `json:"log_path"`
+	MetricsInterval   int    `json:"metrics_interval"`   // 性能指标上报间隔（秒），默认30
+	DetailInterval    int    `json:"detail_interval"`    // 详细信息上报间隔（秒），默认30
+	SystemInterval    int    `json:"system_interval"`    // 系统信息上报间隔（秒），默认30
+	HeartbeatInterval int    `json:"heartbeat_interval"` // 心跳间隔（秒），默认20
 }
 
 func LoadConfig() Config {
 	var cfg Config
-	
+
 	// 解析命令行参数
 	serverFlag := flag.String("server", "", "WebSocket服务器地址 (例如: ws://127.0.0.1:3000/ws/agent)")
 	keyFlag := flag.String("key", "", "Agent通信密钥")
 	flag.Parse()
-	
+
 	// 获取配置文件路径（当前目录）
 	configPath := "agent.lock.json"
-	
+
 	// 如果文件存在，读取配置
 	_, err := os.Stat(configPath)
 	if err == nil {
@@ -36,14 +40,14 @@ func LoadConfig() Config {
 			fmt.Println("读取锁定文件时出错:", err)
 			os.Exit(1)
 		}
-		
+
 		err = json.Unmarshal(file, &cfg)
 		if err != nil {
 			fmt.Println("解析JSON数据时出错:", err)
 			os.Exit(1)
 		}
 	}
-	
+
 	// 命令行参数优先于配置文件
 	if *serverFlag != "" {
 		cfg.Server = *serverFlag
@@ -51,7 +55,7 @@ func LoadConfig() Config {
 	if *keyFlag != "" {
 		cfg.Key = *keyFlag
 	}
-	
+
 	// 验证配置是否完整
 	if cfg.Server == "" || cfg.Key == "" {
 		missingFields := []string{}
@@ -61,7 +65,7 @@ func LoadConfig() Config {
 		if cfg.Key == "" {
 			missingFields = append(missingFields, "通信密钥")
 		}
-		
+
 		fmt.Printf("配置不完整，缺少: %s\n", strings.Join(missingFields, "、"))
 		fmt.Println("")
 		fmt.Println("方式1: 使用命令行参数")
@@ -69,9 +73,9 @@ func LoadConfig() Config {
 		fmt.Println("")
 		fmt.Println("方式2: 交互式输入缺失的配置（将更新 agent.lock.json 配置文件）")
 		fmt.Println("")
-		
+
 		reader := bufio.NewReader(os.Stdin)
-		
+
 		if cfg.Server == "" {
 			fmt.Print("主控WebSocket: ")
 			input, err := reader.ReadString('\n')
@@ -81,7 +85,7 @@ func LoadConfig() Config {
 			}
 			cfg.Server = strings.TrimSpace(input)
 		}
-		
+
 		if cfg.Key == "" {
 			fmt.Print("通信密钥: ")
 			input, err := reader.ReadString('\n')
@@ -91,13 +95,13 @@ func LoadConfig() Config {
 			}
 			cfg.Key = strings.TrimSpace(input)
 		}
-		
+
 		// 验证输入
 		if cfg.Server == "" || cfg.Key == "" {
 			fmt.Println("服务器地址和通信密钥不能为空")
 			os.Exit(1)
 		}
-		
+
 		// 创建或更新锁定文件（写入当前目录）
 		file, err := os.Create("agent.lock.json")
 		if err != nil {
@@ -105,7 +109,7 @@ func LoadConfig() Config {
 			os.Exit(1)
 		}
 		defer file.Close()
-		
+
 		// 使用json格式写入配置
 		configJSON, err := json.Marshal(cfg)
 		if err != nil {
@@ -123,6 +127,21 @@ func LoadConfig() Config {
 	if cfg.LogPath == "" {
 		cfg.LogPath = "logs"
 	}
+
+	// 设置默认上报间隔
+	if cfg.MetricsInterval <= 0 {
+		cfg.MetricsInterval = 30 // 默认30秒
+	}
+	if cfg.DetailInterval <= 0 {
+		cfg.DetailInterval = 30 // 默认30秒
+	}
+	if cfg.SystemInterval <= 0 {
+		cfg.SystemInterval = 30 // 默认30秒
+	}
+	if cfg.HeartbeatInterval <= 0 {
+		cfg.HeartbeatInterval = 20 // 默认20秒
+	}
+
 	return cfg
 }
 

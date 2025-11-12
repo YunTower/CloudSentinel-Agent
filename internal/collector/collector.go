@@ -20,6 +20,11 @@ type Collector struct {
 	Logger *logger.Logger
 	Client *websocket.Client
 
+	// 上报间隔配置
+	MetricsInterval int // 性能指标上报间隔（秒）
+	DetailInterval  int // 详细信息上报间隔（秒）
+	SystemInterval  int // 系统信息上报间隔（秒）
+
 	// 网络IO统计相关
 	lastNetIOCounters map[string]net.IOCountersStat
 	lastNetIOTime     time.Time
@@ -31,11 +36,14 @@ type Collector struct {
 	diskIOMutex        sync.RWMutex
 }
 
-func NewCollector(sys *system.System, log *logger.Logger, client *websocket.Client) *Collector {
+func NewCollector(sys *system.System, log *logger.Logger, client *websocket.Client, metricsInterval, detailInterval, systemInterval int) *Collector {
 	return &Collector{
-		System: sys,
-		Logger: log,
-		Client: client,
+		System:          sys,
+		Logger:          log,
+		Client:          client,
+		MetricsInterval: metricsInterval,
+		DetailInterval:  detailInterval,
+		SystemInterval:  systemInterval,
 	}
 }
 
@@ -422,9 +430,12 @@ func (c *Collector) StartPeriodicReporting(ctx context.Context, healthChan chan<
 	}
 
 	// 创建所有 ticker
-	metricsTicker := time.NewTicker(30 * time.Second)
-	detailTicker := time.NewTicker(60 * time.Second)
-	systemTicker := time.NewTicker(5 * time.Minute)
+	metricsTicker := time.NewTicker(time.Duration(c.MetricsInterval) * time.Second)
+	detailTicker := time.NewTicker(time.Duration(c.DetailInterval) * time.Second)
+	systemTicker := time.NewTicker(time.Duration(c.SystemInterval) * time.Second)
+
+	c.Logger.Info("数据上报间隔配置: 性能指标=%d秒, 详细信息=%d秒, 系统信息=%d秒",
+		c.MetricsInterval, c.DetailInterval, c.SystemInterval)
 
 	// 确保所有 ticker 在退出时停止
 	defer func() {

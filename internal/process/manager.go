@@ -37,6 +37,9 @@ type ProcessManager struct {
 	// 子进程引用
 	client    *websocket.Client
 	collector *collector.Collector
+
+	// 配置
+	heartbeatInterval time.Duration
 }
 
 // NewProcessManager 创建新的进程管理器
@@ -62,6 +65,11 @@ func (pm *ProcessManager) SetClient(client *websocket.Client) {
 // SetCollector 设置数据收集器
 func (pm *ProcessManager) SetCollector(col *collector.Collector) {
 	pm.collector = col
+}
+
+// SetHeartbeatInterval 设置心跳间隔
+func (pm *ProcessManager) SetHeartbeatInterval(interval time.Duration) {
+	pm.heartbeatInterval = interval
 }
 
 // StartHeartbeatProcess 启动心跳进程
@@ -105,7 +113,7 @@ func (pm *ProcessManager) runHeartbeatProcess() {
 
 		// 运行心跳
 		pm.logger.Info("心跳进程：启动")
-		pm.client.StartHeartbeat(pm.heartbeatCtx, pm.heartbeatHealth)
+		pm.client.StartHeartbeat(pm.heartbeatCtx, pm.heartbeatHealth, pm.heartbeatInterval)
 
 		// 心跳进程退出，检查是否需要重启
 		select {

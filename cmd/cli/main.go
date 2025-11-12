@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"sync"
 	"syscall"
+	"time"
 )
 
 const agentVersion = "0.0.1"
@@ -36,12 +37,14 @@ func main() {
 	}
 
 	// 创建数据收集器
-	col := collector.NewCollector(sys, logger, client)
+	col := collector.NewCollector(sys, logger, client,
+		cfg.MetricsInterval, cfg.DetailInterval, cfg.SystemInterval)
 
 	// 创建进程管理器
 	pm := process.NewProcessManager(logger)
 	pm.SetClient(client)
 	pm.SetCollector(col)
+	pm.SetHeartbeatInterval(time.Duration(cfg.HeartbeatInterval) * time.Second)
 
 	// 启动进程监控
 	go pm.MonitorProcesses()
