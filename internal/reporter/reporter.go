@@ -2,9 +2,7 @@ package reporter
 
 import (
 	"agent/config"
-	"agent/internal/collector"
 	"agent/internal/logger"
-	"agent/internal/system"
 	"agent/internal/websocket"
 	"encoding/json"
 	"io"
@@ -63,15 +61,16 @@ func sendAuthMessage(client *websocket.Client, cfg config.Config, logger *logger
 	}
 }
 
-func StartReporter(client *websocket.Client, system *system.System, logger *logger.Logger, cfg config.Config) {
-	col := collector.NewCollector(system, logger, client)
-	isDataReportingStarted := false
+// ReporterCallbacks 定义回调函数接口
+type ReporterCallbacks struct {
+	OnAuthSuccess func() // 认证成功时调用
+	OnDisconnect  func() // 断开连接时调用
+}
 
+// StartReporter 启动消息处理循环，只负责消息读取和认证
+func StartReporter(client *websocket.Client, logger *logger.Logger, cfg config.Config, callbacks ReporterCallbacks) {
 	// 连接成功后立即发送认证消息
 	sendAuthMessage(client, cfg, logger)
-
-	// 在 goroutine 中启动心跳
-	go client.StartHeartbeat()
 
 	// 消息读取循环
 	for {
@@ -83,12 +82,13 @@ func StartReporter(client *websocket.Client, system *system.System, logger *logg
 				time.Sleep(5 * time.Second)
 				continue
 			}
-			isDataReportingStarted = false
 			conn = client.GetConnection()
 			// 重连成功后立即发送认证消息
 			sendAuthMessage(client, cfg, logger)
-			// 重启心跳
-			go client.StartHeartbeat()
+			// 通知断开连接，让主进程重启子进程
+			if callbacks.OnDisconnect != nil {
+				callbacks.OnDisconnect()
+			}
 		}
 
 		// 设置读取超时，防止阻塞
@@ -111,11 +111,12 @@ func StartReporter(client *websocket.Client, system *system.System, logger *logg
 				// 重置连接状态，允许下一轮重连
 				continue
 			} else {
-				isDataReportingStarted = false
 				// 重连成功后立即发送认证消息
 				sendAuthMessage(client, cfg, logger)
-				// 重启心跳
-				go client.StartHeartbeat()
+				// 通知断开连接，让主进程重启子进程
+				if callbacks.OnDisconnect != nil {
+					callbacks.OnDisconnect()
+				}
 			}
 			continue
 		}
@@ -135,10 +136,9 @@ func StartReporter(client *websocket.Client, system *system.System, logger *logg
 		if statusExists && typeValue == "auth" && statusValue == "success" {
 			logger.Success("认证成功")
 
-			// 认证成功后启动数据收集（仅启动一次）
-			if !isDataReportingStarted {
-				isDataReportingStarted = true
-				go col.StartPeriodicReporting()
+			// 通知主进程认证成功，启动数据上报和心跳
+			if callbacks.OnAuthSuccess != nil {
+				callbacks.OnAuthSuccess()
 			}
 		}
 

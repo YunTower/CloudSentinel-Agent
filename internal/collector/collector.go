@@ -4,6 +4,7 @@ import (
 	"agent/internal/logger"
 	"agent/internal/system"
 	"agent/internal/websocket"
+	"context"
 	"runtime"
 	"sync"
 	"time"
@@ -404,50 +405,123 @@ func (c *Collector) SendVirtualMemory() error {
 	return c.Client.SendMessage(message)
 }
 
-// StartPeriodicReporting 启动周期性上报
-func (c *Collector) StartPeriodicReporting() {
+// StartPeriodicReporting 启动周期性上报，使用 context 控制生命周期
+func (c *Collector) StartPeriodicReporting(ctx context.Context, healthChan chan<- bool) {
 	// 立即发送一次系统信息
-	c.SendSystemInfo()
+	if err := c.SendSystemInfo(); err != nil {
+		c.Logger.Warn("发送系统信息失败: %v", err)
+		select {
+		case healthChan <- false:
+		default:
+		}
+	} else {
+		select {
+		case healthChan <- true:
+		default:
+		}
+	}
 
-	// 每30秒发送一次性能指标
+	// 创建所有 ticker
 	metricsTicker := time.NewTicker(30 * time.Second)
-	go func() {
-		for range metricsTicker.C {
+	detailTicker := time.NewTicker(60 * time.Second)
+	systemTicker := time.NewTicker(5 * time.Minute)
+
+	// 确保所有 ticker 在退出时停止
+	defer func() {
+		metricsTicker.Stop()
+		detailTicker.Stop()
+		systemTicker.Stop()
+		c.Logger.Info("数据上报进程：已停止")
+	}()
+
+	c.Logger.Success("数据上报进程：已启动")
+
+	for {
+		select {
+		case <-metricsTicker.C:
+			// 每30秒发送一次性能指标
 			if !c.Client.IsConnected {
 				c.Logger.Warn("未连接，跳过性能指标上报")
+				select {
+				case healthChan <- false:
+				default:
+				}
 				continue
 			}
-			c.SendMetrics()
-		}
-	}()
+			if err := c.SendMetrics(); err != nil {
+				c.Logger.Error("发送性能指标失败: %v", err)
+				select {
+				case healthChan <- false:
+				default:
+				}
+			} else {
+				select {
+				case healthChan <- true:
+				default:
+				}
+			}
 
-	// 每60秒发送一次详细信息
-	detailTicker := time.NewTicker(60 * time.Second)
-	go func() {
-		for range detailTicker.C {
+		case <-detailTicker.C:
+			// 每60秒发送一次详细信息
 			if !c.Client.IsConnected {
 				c.Logger.Warn("未连接，跳过详细信息上报")
+				select {
+				case healthChan <- false:
+				default:
+				}
 				continue
 			}
-			c.SendMemoryInfo()
-			c.SendDiskInfo()
-			c.SendDiskIO() // 发送磁盘IO数据
-			c.SendNetworkInfo()
-			c.SendVirtualMemory()
-		}
-	}()
+			hasError := false
+			if err := c.SendMemoryInfo(); err != nil {
+				c.Logger.Error("发送内存信息失败: %v", err)
+				hasError = true
+			}
+			if err := c.SendDiskInfo(); err != nil {
+				c.Logger.Error("发送磁盘信息失败: %v", err)
+				hasError = true
+			}
+			if err := c.SendDiskIO(); err != nil {
+				c.Logger.Error("发送磁盘IO失败: %v", err)
+				hasError = true
+			}
+			if err := c.SendNetworkInfo(); err != nil {
+				c.Logger.Error("发送网络信息失败: %v", err)
+				hasError = true
+			}
+			if err := c.SendVirtualMemory(); err != nil {
+				c.Logger.Error("发送虚拟内存信息失败: %v", err)
+				hasError = true
+			}
+			select {
+			case healthChan <- !hasError:
+			default:
+			}
 
-	// 每5分钟重新发送一次系统信息
-	systemTicker := time.NewTicker(5 * time.Minute)
-	go func() {
-		for range systemTicker.C {
+		case <-systemTicker.C:
+			// 每5分钟重新发送一次系统信息
 			if !c.Client.IsConnected {
 				c.Logger.Warn("未连接，跳过系统信息上报")
+				select {
+				case healthChan <- false:
+				default:
+				}
 				continue
 			}
-			c.SendSystemInfo()
-		}
-	}()
+			if err := c.SendSystemInfo(); err != nil {
+				c.Logger.Error("发送系统信息失败: %v", err)
+				select {
+				case healthChan <- false:
+				default:
+				}
+			} else {
+				select {
+				case healthChan <- true:
+				default:
+				}
+			}
 
-	c.Logger.Success("周期性上报已启动")
+		case <-ctx.Done():
+			return
+		}
+	}
 }

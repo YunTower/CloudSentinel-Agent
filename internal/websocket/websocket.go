@@ -2,6 +2,7 @@ package websocket
 
 import (
 	"agent/internal/logger"
+	"context"
 	"encoding/json"
 	"fmt"
 	"sync"
@@ -24,7 +25,6 @@ type Client struct {
 	MaxReconnect  int
 	mu            sync.Mutex
 	stopChan      chan struct{}
-	heartbeatStop chan struct{}
 }
 
 func NewClient(api string, logger *logger.Logger) *Client {
@@ -35,7 +35,6 @@ func NewClient(api string, logger *logger.Logger) *Client {
 		ReconnectWait: 5 * time.Second,
 		MaxReconnect:  5, // 最多重连5次
 		stopChan:      make(chan struct{}),
-		heartbeatStop: make(chan struct{}),
 	}
 }
 
@@ -100,10 +99,12 @@ func (c *Client) Reconnect() error {
 	return c.ConnectWithRetry()
 }
 
-func (c *Client) StartHeartbeat() {
-	c.heartbeatStop = make(chan struct{})
+// StartHeartbeat 启动心跳进程，使用 context 控制生命周期
+func (c *Client) StartHeartbeat(ctx context.Context, healthChan chan<- bool) {
 	ticker := time.NewTicker(20 * time.Second)
 	defer ticker.Stop()
+
+	c.Logger.Info("心跳进程：已启动")
 
 	for {
 		select {
@@ -113,18 +114,23 @@ func (c *Client) StartHeartbeat() {
 			}
 			if err := c.SendMessage(heartbeatMessage); err != nil {
 				c.Logger.Error("心跳发送失败: %v", err)
-				// 心跳发送失败，触发重连
+				// 上报不健康状态
+				select {
+				case healthChan <- false:
+				default:
+				}
 				return
 			}
-		case <-c.heartbeatStop:
-			c.Logger.Info("心跳停止")
+			// 上报健康状态
+			select {
+			case healthChan <- true:
+			default:
+			}
+		case <-ctx.Done():
+			c.Logger.Info("心跳进程：已停止")
 			return
 		}
 	}
-}
-
-func (c *Client) StopHeartbeat() {
-	close(c.heartbeatStop)
 }
 
 func (c *Client) SendMessage(content interface{}) error {
@@ -153,7 +159,6 @@ func (c *Client) SendMessage(content interface{}) error {
 
 func (c *Client) Close() {
 	close(c.stopChan)
-	c.StopHeartbeat()
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
