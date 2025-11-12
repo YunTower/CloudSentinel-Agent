@@ -196,12 +196,30 @@ func (c *Collector) getDiskUsage() float64 {
 
 	totalUsage := 0.0
 	validCount := 0
+	seenDevices := make(map[string]bool) // 用于去重相同设备
 
 	for _, partition := range partitions {
+		// 跳过虚拟文件系统
+		if c.isVirtualFilesystem(partition.Mountpoint) {
+			continue
+		}
+
+		// 跳过已处理的设备
+		if seenDevices[partition.Device] {
+			continue
+		}
+
 		usage := c.System.GetDiskUsage(partition.Mountpoint)
 		if usage == nil {
 			continue
 		}
+
+		// 跳过总大小为0的虚拟文件系统
+		if usage.Total == 0 {
+			continue
+		}
+
+		seenDevices[partition.Device] = true
 		totalUsage += usage.UsedPercent
 		validCount++
 	}
@@ -213,7 +231,7 @@ func (c *Collector) getDiskUsage() float64 {
 	return totalUsage / float64(validCount)
 }
 
-// SendMetrics 发送性能指标（用于实时监控）
+// SendMetrics 发送性能指标
 func (c *Collector) SendMetrics() error {
 	memTotal := c.System.GetMemoryTotal()
 	memUsed := c.System.GetMemoryUsed()
@@ -296,17 +314,57 @@ func (c *Collector) SendMemoryInfo() error {
 	return c.Client.SendMessage(message)
 }
 
+// isVirtualFilesystem 判断是否为虚拟文件系统
+func (c *Collector) isVirtualFilesystem(mountPoint string) bool {
+	// 常见的虚拟文件系统挂载点前缀
+	virtualMountPrefixes := []string{
+		"/proc",
+		"/sys",
+		"/dev",
+		"/run",
+		"/var/run",
+		"/snap",
+	}
+
+	// 检查是否以虚拟文件系统路径开头
+	for _, prefix := range virtualMountPrefixes {
+		if mountPoint == prefix || (len(mountPoint) > len(prefix) && mountPoint[:len(prefix)+1] == prefix+"/") {
+			return true
+		}
+	}
+
+	return false
+}
+
 // SendDiskInfo 发送磁盘信息
 func (c *Collector) SendDiskInfo() error {
 	partitions := c.System.GetDiskPart()
 
 	var diskData []map[string]interface{}
+	seenDevices := make(map[string]bool) // 用于去重相同设备
+
 	for _, partition := range partitions {
+		// 跳过虚拟文件系统
+		if c.isVirtualFilesystem(partition.Mountpoint) {
+			continue
+		}
+
+		// 跳过已处理的设备
+		if seenDevices[partition.Device] {
+			continue
+		}
+
 		usage := c.System.GetDiskUsage(partition.Mountpoint)
 		if usage == nil {
 			continue
 		}
 
+		// 跳过总大小为0的虚拟文件系统
+		if usage.Total == 0 {
+			continue
+		}
+
+		seenDevices[partition.Device] = true
 		diskData = append(diskData, map[string]interface{}{
 			"mount_point":   partition.Mountpoint,
 			"device":        partition.Device,
