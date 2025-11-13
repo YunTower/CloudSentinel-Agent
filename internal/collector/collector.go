@@ -594,3 +594,12 @@ func (c *Collector) StartPeriodicReporting(ctx context.Context, healthChan chan<
 		}
 	}
 }
+
+// UpdateIntervals 更新上报间隔配置（用于配置重载）
+func (c *Collector) UpdateIntervals(metricsInterval, detailInterval, systemInterval int) {
+	c.MetricsInterval = metricsInterval
+	c.DetailInterval = detailInterval
+	c.SystemInterval = systemInterval
+	c.Logger.Info("配置已更新: 性能指标=%d秒, 详细信息=%d秒, 系统信息=%d秒",
+		c.MetricsInterval, c.DetailInterval, c.SystemInterval)
+}

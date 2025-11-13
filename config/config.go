@@ -21,6 +21,121 @@ type Config struct {
 	HeartbeatInterval int    `json:"heartbeat_interval"` // 心跳间隔（秒），默认20
 }
 
+// LoadConfigFromFile 从指定文件加载配置
+func LoadConfigFromFile(configPath string) (Config, error) {
+	var cfg Config
+
+	// 如果文件存在，读取配置
+	_, err := os.Stat(configPath)
+	if err == nil {
+		file, err := os.ReadFile(configPath)
+		if err != nil {
+			return cfg, fmt.Errorf("读取配置文件时出错: %w", err)
+		}
+
+		err = json.Unmarshal(file, &cfg)
+		if err != nil {
+			return cfg, fmt.Errorf("解析JSON数据时出错: %w", err)
+		}
+	} else {
+		return cfg, fmt.Errorf("配置文件不存在: %s", configPath)
+	}
+
+	// 设置默认值
+	if cfg.LogPath == "" {
+		cfg.LogPath = "logs"
+	}
+
+	// 设置默认上报间隔
+	if cfg.MetricsInterval <= 0 {
+		cfg.MetricsInterval = 30 // 默认30秒
+	}
+	if cfg.DetailInterval <= 0 {
+		cfg.DetailInterval = 30 // 默认30秒
+	}
+	if cfg.SystemInterval <= 0 {
+		cfg.SystemInterval = 30 // 默认30秒
+	}
+	if cfg.HeartbeatInterval <= 0 {
+		cfg.HeartbeatInterval = 20 // 默认20秒
+	}
+
+	return cfg, nil
+}
+
+// GetConfigPath 获取配置文件路径
+func GetConfigPath() string {
+	execPath, err := os.Executable()
+	if err != nil {
+		return "agent.lock.json"
+	}
+	execDir := ""
+	if idx := len(execPath) - 1; idx >= 0 {
+		for i := idx; i >= 0; i-- {
+			if execPath[i] == '/' || execPath[i] == '\\' {
+				execDir = execPath[:i]
+				break
+			}
+		}
+	}
+	if execDir == "" {
+		execDir = "."
+	}
+	return execDir + "/agent.lock.json"
+}
+
+// SaveConfig 保存配置到文件
+func SaveConfig(cfg Config, configPath string) error {
+	configJSON, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return fmt.Errorf("序列化配置时出错: %w", err)
+	}
+
+	err = os.WriteFile(configPath, configJSON, 0644)
+	if err != nil {
+		return fmt.Errorf("写入文件时出错: %w", err)
+	}
+
+	return nil
+}
+
+// SetConfigValue 设置配置项的值
+func (c *Config) SetConfigValue(key, value string) error {
+	switch key {
+	case "server":
+		c.Server = value
+	case "key":
+		c.Key = value
+	case "log_path":
+		c.LogPath = value
+	default:
+		return fmt.Errorf("未知的配置项: %s", key)
+	}
+	return nil
+}
+
+// GetConfigValue 获取配置项的值
+func (c *Config) GetConfigValue(key string) (string, error) {
+	switch key {
+	case "server":
+		return c.Server, nil
+	case "key":
+		return c.Key, nil
+	case "log_path":
+		return c.LogPath, nil
+	case "metrics_interval":
+		return fmt.Sprintf("%d", c.MetricsInterval), nil
+	case "detail_interval":
+		return fmt.Sprintf("%d", c.DetailInterval), nil
+	case "system_interval":
+		return fmt.Sprintf("%d", c.SystemInterval), nil
+	case "heartbeat_interval":
+		return fmt.Sprintf("%d", c.HeartbeatInterval), nil
+	default:
+		return "", fmt.Errorf("未知的配置项: %s", key)
+	}
+}
+
 func LoadConfig() Config {
 	var cfg Config
 
@@ -29,23 +144,13 @@ func LoadConfig() Config {
 	keyFlag := flag.String("key", "", "Agent通信密钥")
 	flag.Parse()
 
-	// 获取配置文件路径（当前目录）
-	configPath := "agent.lock.json"
+	// 获取配置文件路径（程序所在目录）
+	configPath := GetConfigPath()
 
-	// 如果文件存在，读取配置
-	_, err := os.Stat(configPath)
+	// 尝试从文件加载配置
+	fileCfg, err := LoadConfigFromFile(configPath)
 	if err == nil {
-		file, err := os.ReadFile(configPath)
-		if err != nil {
-			fmt.Println("读取锁定文件时出错:", err)
-			os.Exit(1)
-		}
-
-		err = json.Unmarshal(file, &cfg)
-		if err != nil {
-			fmt.Println("解析JSON数据时出错:", err)
-			os.Exit(1)
-		}
+		cfg = fileCfg
 	}
 
 	// 命令行参数优先于配置文件
@@ -102,28 +207,15 @@ func LoadConfig() Config {
 			os.Exit(1)
 		}
 
-		// 创建或更新锁定文件（写入当前目录）
-		file, err := os.Create("agent.lock.json")
-		if err != nil {
-			fmt.Println("创建文件时出错:", err)
+		// 保存配置到文件
+		if err := SaveConfig(cfg, configPath); err != nil {
+			fmt.Printf("保存配置时出错: %v\n", err)
 			os.Exit(1)
 		}
-		defer file.Close()
-
-		// 使用json格式写入配置
-		configJSON, err := json.Marshal(cfg)
-		if err != nil {
-			fmt.Println("序列化配置时出错:", err)
-			os.Exit(1)
-		}
-		_, err = file.Write(configJSON)
-		if err != nil {
-			fmt.Println("写入文件时出错:", err)
-			os.Exit(1)
-		}
-		fmt.Println("配置已保存到 agent.lock.json")
+		fmt.Printf("配置已保存到 %s\n", configPath)
 	}
 
+	// 如果未设置，则设置默认值
 	if cfg.LogPath == "" {
 		cfg.LogPath = "logs"
 	}
