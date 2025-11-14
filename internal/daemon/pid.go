@@ -69,14 +69,26 @@ func IsProcessRunning(pid int) bool {
 
 // CheckPIDFile 检查PID文件是否存在且进程正在运行
 func CheckPIDFile(pidFile string) (int, bool, error) {
-	pid, err := ReadPID(pidFile)
+	// 先检查文件是否存在
+	_, err := os.Stat(pidFile)
 	if err != nil {
 		if os.IsNotExist(err) {
+			// 文件不存在，表示没有运行中的实例
 			return 0, false, nil
 		}
-		return 0, false, err
+		// 其他错误（如权限问题）
+		return 0, false, fmt.Errorf("检查PID文件失败: %w", err)
 	}
 
+	// 文件存在，读取PID
+	pid, err := ReadPID(pidFile)
+	if err != nil {
+		// 读取失败，可能是文件损坏，清理并返回未运行
+		os.Remove(pidFile)
+		return 0, false, nil
+	}
+
+	// 检查进程是否运行
 	running := IsProcessRunning(pid)
 	return pid, running, nil
 }

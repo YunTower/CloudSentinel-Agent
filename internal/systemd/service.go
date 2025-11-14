@@ -36,8 +36,9 @@ func DisableService() error {
 // StartService 启动systemd服务
 func StartService() error {
 	cmd := exec.Command("systemctl", "start", "cloudsentinel-agent.service")
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("启动服务失败: %w", err)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("启动服务失败: %w, 输出: %s", err, string(output))
 	}
 	return nil
 }

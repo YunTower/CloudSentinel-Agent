@@ -74,12 +74,30 @@ func StartReporter(client *websocket.Client, logger *logger.Logger, cfg config.C
 
 	// 消息读取循环
 	for {
+		// 检查是否已停止
+		if client.IsStopped() {
+			logger.Info("Reporter已停止")
+			return
+		}
+
 		conn := client.GetConnection()
 		if conn == nil {
+			// 检查是否已停止
+			if client.IsStopped() {
+				logger.Info("Reporter已停止")
+				return
+			}
 			logger.Error("连接不可用，尝试重连...")
 			if err := client.Reconnect(); err != nil {
 				logger.Error("重连失败: %v", err)
-				time.Sleep(5 * time.Second)
+				// 等待期间定期检查停止状态
+				for i := 0; i < 5; i++ {
+					if client.IsStopped() {
+						logger.Info("Reporter已停止")
+						return
+					}
+					time.Sleep(1 * time.Second)
+				}
 				continue
 			}
 			conn = client.GetConnection()
@@ -96,6 +114,12 @@ func StartReporter(client *websocket.Client, logger *logger.Logger, cfg config.C
 
 		_, message, err := conn.ReadMessage()
 		if err != nil {
+			// 检查是否已停止
+			if client.IsStopped() {
+				logger.Info("Reporter已停止")
+				return
+			}
+
 			if err == io.EOF {
 				logger.Warn("连接已关闭")
 			} else {
@@ -107,7 +131,14 @@ func StartReporter(client *websocket.Client, logger *logger.Logger, cfg config.C
 			if err := client.Reconnect(); err != nil {
 				logger.Error("重连失败: %v", err)
 				logger.Error("已达最大重连次数，请检查网络连接或后端服务状态")
-				time.Sleep(60 * time.Second)
+				// 等待期间定期检查停止状态（每5秒检查一次，共60秒）
+				for i := 0; i < 12; i++ {
+					if client.IsStopped() {
+						logger.Info("Reporter已停止")
+						return
+					}
+					time.Sleep(5 * time.Second)
+				}
 				// 重置连接状态，允许下一轮重连
 				continue
 			} else {

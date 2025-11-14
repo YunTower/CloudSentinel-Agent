@@ -218,16 +218,34 @@ func (c *Client) SendMessage(content interface{}) error {
 }
 
 func (c *Client) Close() {
-	close(c.stopChan)
+	c.mu.Lock()
+	select {
+	case <-c.stopChan:
+		// 已经关闭
+		c.mu.Unlock()
+		return
+	default:
+		close(c.stopChan)
+	}
+	c.mu.Unlock()
 
 	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	if c.Conn != nil {
 		c.Conn.Close()
 	}
 	c.IsConnected = false
+	c.mu.Unlock()
 	c.Logger.Info("WebSocket 连接已关闭")
+}
+
+// IsStopped 检查客户端是否已停止
+func (c *Client) IsStopped() bool {
+	select {
+	case <-c.stopChan:
+		return true
+	default:
+		return false
+	}
 }
 
 func (c *Client) GetConnection() *websocket.Conn {
