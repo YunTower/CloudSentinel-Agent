@@ -28,9 +28,22 @@ func init() {
 	rootCmd.AddCommand(startCmd)
 }
 
+// isRunningUnderSystemd 检查是否在systemd环境中运行
+func isRunningUnderSystemd() bool {
+	// systemd会设置INVOCATION_ID环境变量
+	if os.Getenv("INVOCATION_ID") != "" {
+		return true
+	}
+	// 检查父进程是否为systemd (PID 1)
+	if os.Getppid() == 1 {
+		return true
+	}
+	return false
+}
+
 func runStart(cmd *cobra.Command, args []string) error {
-	// 如果systemd服务存在，优先使用systemd管理
-	if systemd.ServiceExists() {
+	// 如果systemd服务存在，且不是由systemd调用的，优先使用systemd管理
+	if systemd.ServiceExists() && !isRunningUnderSystemd() {
 		active, _ := systemd.IsServiceActive()
 		if active {
 			printStatus("running", "agent已在运行中")
@@ -66,13 +79,16 @@ func runStart(cmd *cobra.Command, args []string) error {
 	}
 
 	// 检查是否已经运行（直接启动模式）
-	pid, running, err := daemon.CheckPIDFile(pidFile)
-	if err != nil {
-		return fmt.Errorf("检查PID文件失败: %w", err)
-	}
-	if running {
-		printStatus("running", fmt.Sprintf("agent已在运行中 (PID: %d)", pid))
-		return nil
+	// 在systemd环境中，不检查PID文件，因为systemd会管理进程
+	if !isRunningUnderSystemd() {
+		pid, running, err := daemon.CheckPIDFile(pidFile)
+		if err != nil {
+			return fmt.Errorf("检查PID文件失败: %w", err)
+		}
+		if running {
+			printStatus("running", fmt.Sprintf("agent已在运行中 (PID: %d)", pid))
+			return nil
+		}
 	}
 
 	// 加载配置
@@ -87,19 +103,21 @@ func runStart(cmd *cobra.Command, args []string) error {
 		cfg = config.LoadConfig()
 	}
 
-	// 如果指定了守护进程模式
-	if daemonFlag {
+	// 如果指定了守护进程模式（且不在systemd环境中）
+	if daemonFlag && !isRunningUnderSystemd() {
 		// 转换为守护进程
 		if err := daemon.Daemonize(); err != nil {
 			return fmt.Errorf("守护进程化失败: %w", err)
 		}
 	}
 
-	// 写入PID文件
-	if err := daemon.WritePID(pidFile); err != nil {
-		return fmt.Errorf("写入PID文件失败: %w", err)
+	// 写入PID文件（仅在非systemd环境中）
+	if !isRunningUnderSystemd() {
+		if err := daemon.WritePID(pidFile); err != nil {
+			return fmt.Errorf("写入PID文件失败: %w", err)
+		}
+		defer daemon.RemovePID(pidFile)
 	}
-	defer daemon.RemovePID(pidFile)
 
 	// 创建并启动agent
 	ag, err := agent.NewAgent(cfg)
