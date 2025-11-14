@@ -51,6 +51,15 @@ func (s *System) GetMemoryUsedPercent() int {
 	return int(v.UsedPercent)
 }
 
+// GetSwapMemory 获取Swap内存信息
+func (s *System) GetSwapMemory() (total, used, free int, usedPercent float64) {
+	swap, err := mem.SwapMemory()
+	if err != nil {
+		return 0, 0, 0, 0.0
+	}
+	return int(swap.Total), int(swap.Used), int(swap.Free), swap.UsedPercent
+}
+
 // GetCpuCount cpu 物理核心数
 func (s *System) GetCpuCount() int {
 	count, _ := cpu.Counts(false)

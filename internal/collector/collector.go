@@ -451,21 +451,20 @@ func (c *Collector) SendNetworkInfo() error {
 	return c.Client.SendMessage(message)
 }
 
-// SendVirtualMemory 发送虚拟内存信息
+// SendVirtualMemory 发送Swap内存信息
 func (c *Collector) SendVirtualMemory() error {
-	// 这里使用swap信息作为虚拟内存
-	// gopsutil库中虚拟内存实际上就是swap
-	// 这里可以进一步完善
+	swapTotal, swapUsed, swapFree, swapUsedPercent := c.System.GetSwapMemory()
 
-	vmData := map[string]interface{}{
-		"virtual_memory_total": 0,
-		"virtual_memory_used":  0,
-		"virtual_memory_free":  0,
+	swapData := map[string]interface{}{
+		"swap_total":         swapTotal,
+		"swap_used":          swapUsed,
+		"swap_free":          swapFree,
+		"swap_usage_percent": swapUsedPercent,
 	}
 
 	message := websocket.Message{
-		Type: "virtual_memory",
-		Data: vmData,
+		Type: "swap_info",
+		Data: swapData,
 	}
 
 	return c.Client.SendMessage(message)
