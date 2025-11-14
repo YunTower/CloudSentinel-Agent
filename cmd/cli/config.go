@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"encoding/json"
 	"fmt"
 
 	"agent/config"
@@ -105,6 +104,23 @@ func runConfigGet(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+// getConfigDescription 获取配置项的说明
+func getConfigDescription(key string) string {
+	descriptions := map[string]string{
+		"server":             "WebSocket服务器地址",
+		"key":                "Agent通信密钥",
+		"log_path":           "日志文件存储路径",
+		"metrics_interval":   "性能指标上报间隔（秒）",
+		"detail_interval":    "详细信息上报间隔（秒）",
+		"system_interval":    "系统信息上报间隔（秒）",
+		"heartbeat_interval": "心跳间隔（秒）",
+	}
+	if desc, ok := descriptions[key]; ok {
+		return desc
+	}
+	return "未知配置项"
+}
+
 func runConfigList(cmd *cobra.Command, args []string) error {
 	// 获取配置文件路径
 	cfgPath := configPath
@@ -118,12 +134,33 @@ func runConfigList(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("加载配置失败: %w", err)
 	}
 
-	// 以JSON格式输出
-	jsonData, err := json.MarshalIndent(cfg, "", "  ")
-	if err != nil {
-		return fmt.Errorf("序列化配置失败: %w", err)
-	}
+	// 以友好格式输出配置项
+	fmt.Println("当前配置:")
+	fmt.Println()
 
-	fmt.Println(string(jsonData))
+	// 字符串类型配置
+	fmt.Printf("  %-20s = %-50s  # %s\n", "server", cfg.Server, getConfigDescription("server"))
+	fmt.Printf("  %-20s = %-50s  # %s\n", "key", maskKey(cfg.Key), getConfigDescription("key"))
+	fmt.Printf("  %-20s = %-50s  # %s\n", "log_path", cfg.LogPath, getConfigDescription("log_path"))
+
+	fmt.Println()
+
+	// 整数类型配置
+	fmt.Printf("  %-20s = %-50d  # %s\n", "metrics_interval", cfg.MetricsInterval, getConfigDescription("metrics_interval"))
+	fmt.Printf("  %-20s = %-50d  # %s\n", "detail_interval", cfg.DetailInterval, getConfigDescription("detail_interval"))
+	fmt.Printf("  %-20s = %-50d  # %s\n", "system_interval", cfg.SystemInterval, getConfigDescription("system_interval"))
+	fmt.Printf("  %-20s = %-50d  # %s\n", "heartbeat_interval", cfg.HeartbeatInterval, getConfigDescription("heartbeat_interval"))
+
+	fmt.Println()
+	printInfo("使用 './agent config set <key> <value>' 修改配置项")
+
 	return nil
+}
+
+// maskKey 掩码显示密钥（只显示前4位和后4位）
+func maskKey(key string) string {
+	if len(key) <= 8 {
+		return "****"
+	}
+	return key[:4] + "..." + key[len(key)-4:]
 }
