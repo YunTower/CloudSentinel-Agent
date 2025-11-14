@@ -20,7 +20,7 @@ var configCmd = &cobra.Command{
 var configSetCmd = &cobra.Command{
 	Use:   "set [key] [value]",
 	Short: "设置配置项",
-	Long:  `设置配置项的值。支持的key: server, key, log_path`,
+	Long:  `设置配置项的值。支持的key: server, key, log_path, metrics_interval, detail_interval, system_interval, heartbeat_interval`,
 	Args:  cobra.ExactArgs(2),
 	RunE:  runConfigSet,
 }

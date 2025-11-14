@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -108,6 +109,42 @@ func (c *Config) SetConfigValue(key, value string) error {
 		c.Key = value
 	case "log_path":
 		c.LogPath = value
+	case "metrics_interval":
+		val, err := strconv.Atoi(value)
+		if err != nil {
+			return fmt.Errorf("metrics_interval必须是整数: %w", err)
+		}
+		if val <= 0 {
+			return fmt.Errorf("metrics_interval必须大于0")
+		}
+		c.MetricsInterval = val
+	case "detail_interval":
+		val, err := strconv.Atoi(value)
+		if err != nil {
+			return fmt.Errorf("detail_interval必须是整数: %w", err)
+		}
+		if val <= 0 {
+			return fmt.Errorf("detail_interval必须大于0")
+		}
+		c.DetailInterval = val
+	case "system_interval":
+		val, err := strconv.Atoi(value)
+		if err != nil {
+			return fmt.Errorf("system_interval必须是整数: %w", err)
+		}
+		if val <= 0 {
+			return fmt.Errorf("system_interval必须大于0")
+		}
+		c.SystemInterval = val
+	case "heartbeat_interval":
+		val, err := strconv.Atoi(value)
+		if err != nil {
+			return fmt.Errorf("heartbeat_interval必须是整数: %w", err)
+		}
+		if val <= 0 {
+			return fmt.Errorf("heartbeat_interval必须大于0")
+		}
+		c.HeartbeatInterval = val
 	default:
 		return fmt.Errorf("未知的配置项: %s", key)
 	}
