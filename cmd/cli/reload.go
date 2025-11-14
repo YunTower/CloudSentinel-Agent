@@ -29,14 +29,16 @@ func runReload(cmd *cobra.Command, args []string) error {
 	}
 
 	if !running {
+		printStatus("stopped", "agent未运行")
 		return fmt.Errorf("agent未运行")
 	}
 
 	// 发送SIGHUP信号
 	if err := daemon.SendSignal(pid, syscall.SIGHUP); err != nil {
-		return fmt.Errorf("发送重载信号失败: %w", err)
+		printError(fmt.Sprintf("发送重载信号失败: %v", err))
+		return err
 	}
 
-	fmt.Printf("已向agent发送重载信号 (PID: %d)\n", pid)
+	printSuccess(fmt.Sprintf("已发送重载信号 (PID: %d)", pid))
 	return nil
 }

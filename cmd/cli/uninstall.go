@@ -29,32 +29,34 @@ func runUninstall(cmd *cobra.Command, args []string) error {
 
 	// 检查service是否存在
 	if !systemd.ServiceExists() {
-		fmt.Println("systemd服务未安装")
+		printInfo("systemd服务未安装")
 		return nil
 	}
 
 	// 停止服务
 	if active, _ := systemd.IsServiceActive(); active {
 		if err := systemd.StopService(); err != nil {
-			fmt.Printf("停止服务时出现警告: %v\n", err)
+			printWarning(fmt.Sprintf("停止服务时出现警告: %v", err))
 		}
 	}
 
 	// 禁用服务
 	if err := systemd.DisableService(); err != nil {
-		fmt.Printf("禁用服务时出现警告: %v\n", err)
+		printWarning(fmt.Sprintf("禁用服务时出现警告: %v", err))
 	}
 
 	// 删除service文件
 	if err := systemd.UninstallService(); err != nil {
-		return fmt.Errorf("删除service文件失败: %w", err)
+		printError(fmt.Sprintf("删除service文件失败: %v", err))
+		return err
 	}
 
 	// 重新加载systemd daemon
 	if err := systemd.ReloadDaemon(); err != nil {
-		return fmt.Errorf("重新加载systemd daemon失败: %w", err)
+		printError(fmt.Sprintf("重新加载systemd daemon失败: %v", err))
+		return err
 	}
 
-	fmt.Println("systemd服务卸载成功")
+	printSuccess("systemd服务卸载成功")
 	return nil
 }

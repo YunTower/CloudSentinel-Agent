@@ -55,12 +55,14 @@ func runInstall(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("启用服务失败: %w", err)
 	}
 
-	fmt.Println("systemd服务安装成功")
-	fmt.Println("使用以下命令管理服务:")
-	fmt.Println("  sudo systemctl start cloudsentinel-agent")
-	fmt.Println("  sudo systemctl stop cloudsentinel-agent")
-	fmt.Println("  sudo systemctl restart cloudsentinel-agent")
-	fmt.Println("  sudo systemctl status cloudsentinel-agent")
+	printSuccess("systemd服务安装成功")
+	fmt.Println()
+	printInfo("使用以下命令管理服务:")
+	fmt.Println("  sudo ./agent start    # 启动服务")
+	fmt.Println("  sudo ./agent stop     # 停止服务")
+	fmt.Println("  sudo ./agent restart  # 重启服务")
+	fmt.Println("  ./agent status        # 查看状态")
+	fmt.Println("  ./agent logs          # 查看日志")
 
 	return nil
 }

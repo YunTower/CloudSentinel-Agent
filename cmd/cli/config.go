@@ -76,7 +76,7 @@ func runConfigSet(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("保存配置失败: %w", err)
 	}
 
-	fmt.Printf("配置项 %s 已设置为: %s\n", key, value)
+	printSuccess(fmt.Sprintf("配置项 %s 已设置为: %s", key, value))
 	return nil
 }
 

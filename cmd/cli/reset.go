@@ -40,18 +40,19 @@ func runReset(cmd *cobra.Command, args []string) error {
 		answer, _ := reader.ReadString('\n')
 		answer = strings.TrimSpace(strings.ToLower(answer))
 		if answer != "y" && answer != "yes" {
-			fmt.Println("已取消")
+			printInfo("已取消")
 			return nil
 		}
 	}
 
 	// 删除配置文件
 	if err := os.Remove(cfgPath); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("删除配置文件失败: %w", err)
+		printError(fmt.Sprintf("删除配置文件失败: %v", err))
+		return err
 	}
 
-	fmt.Printf("配置文件 %s 已删除\n", cfgPath)
-	fmt.Println("请运行 'agent start' 进入交互式配置模式")
+	printSuccess(fmt.Sprintf("配置文件 %s 已删除", cfgPath))
+	printInfo("请运行 './agent start' 进入交互式配置模式")
 
 	return nil
 }

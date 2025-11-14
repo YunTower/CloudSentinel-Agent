@@ -25,14 +25,30 @@ func init() {
 func runStatus(cmd *cobra.Command, args []string) error {
 	// 检查systemd服务状态
 	if systemd.ServiceExists() {
-		active, err := systemd.IsServiceActive()
+		status, err := systemd.GetServiceStatus()
 		if err == nil {
-			if active {
-				fmt.Println("状态: 运行中 (systemd管理)")
-				return nil
-			} else {
-				fmt.Println("状态: 已停止 (systemd管理)")
-				return nil
+			switch status {
+			case "active":
+				printStatus("running", "状态: 运行中")
+				os.Exit(0)
+			case "inactive":
+				printStatus("stopped", "状态: 已停止")
+				printInfo("使用 'sudo ./agent start' 启动服务")
+				printInfo("使用 './agent logs' 查看日志")
+				os.Exit(1)
+			case "activating":
+				printStatus("starting", "状态: 正在启动")
+				os.Exit(0)
+			case "deactivating":
+				printStatus("stopping", "状态: 正在停止")
+				os.Exit(0)
+			case "failed":
+				printStatus("failed", "状态: 启动失败")
+				printWarning("使用 './agent logs' 查看错误日志")
+				os.Exit(1)
+			default:
+				printStatus(status, fmt.Sprintf("状态: %s", status))
+				os.Exit(1)
 			}
 		}
 	}
@@ -44,10 +60,10 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	}
 
 	if running {
-		fmt.Printf("状态: 运行中 (PID: %d)\n", pid)
+		printStatus("running", fmt.Sprintf("状态: 运行中 (PID: %d)", pid))
 		os.Exit(0)
 	} else {
-		fmt.Println("状态: 已停止")
+		printStatus("stopped", "状态: 已停止")
 		os.Exit(1)
 	}
 
