@@ -64,17 +64,23 @@ func runStart(cmd *cobra.Command, args []string) error {
 			return err
 		}
 
-		// 等待一小段时间，让服务启动
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(200 * time.Millisecond)
 
-		// 再次检查状态，确认是否启动成功
-		active, err := systemd.IsServiceActive()
-		if err == nil && active {
-			printSuccess("agent已启动")
-		} else {
-			printWarning("启动命令已执行，但服务可能未成功启动")
-			printInfo("使用 './agent logs' 查看详细日志")
+		// 快速检查状态
+		for i := 0; i < 3; i++ {
+			active, err := systemd.IsServiceActive()
+			if err == nil && active {
+				printSuccess("agent已启动")
+				return nil
+			}
+			if i < 2 {
+				time.Sleep(200 * time.Millisecond)
+			}
 		}
+
+		// 如果还没启动，给出提示但不阻塞
+		printInfo("启动命令已执行，服务正在启动中")
+		printInfo("使用 './agent status' 查看状态，'./agent logs' 查看日志")
 		return nil
 	}
 

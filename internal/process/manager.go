@@ -34,6 +34,10 @@ type ProcessManager struct {
 	// 互斥锁保护重启逻辑
 	mu sync.Mutex
 
+	// 子进程运行状态
+	heartbeatRunning bool
+	reporterRunning  bool
+
 	// 子进程引用
 	client    *websocket.Client
 	collector *collector.Collector
@@ -77,6 +81,12 @@ func (pm *ProcessManager) StartHeartbeatProcess() {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
 
+	// 如果已经在运行，直接返回
+	if pm.heartbeatRunning {
+		pm.logger.Info("心跳进程：已在运行，跳过启动")
+		return
+	}
+
 	// 如果已有心跳进程在运行，先停止
 	if pm.heartbeatCancel != nil {
 		pm.heartbeatCancel()
@@ -84,6 +94,7 @@ func (pm *ProcessManager) StartHeartbeatProcess() {
 
 	// 创建新的 context
 	pm.heartbeatCtx, pm.heartbeatCancel = context.WithCancel(pm.ctx)
+	pm.heartbeatRunning = true
 
 	pm.wg.Add(1)
 	go pm.runHeartbeatProcess()
@@ -91,11 +102,20 @@ func (pm *ProcessManager) StartHeartbeatProcess() {
 
 // runHeartbeatProcess 运行心跳进程
 func (pm *ProcessManager) runHeartbeatProcess() {
-	defer pm.wg.Done()
+	defer func() {
+		pm.mu.Lock()
+		pm.heartbeatRunning = false
+		pm.mu.Unlock()
+		pm.wg.Done()
+	}()
 
 	for {
 		select {
 		case <-pm.ctx.Done():
+			return
+		case <-pm.heartbeatCtx.Done():
+			// Context被取消，正常停止
+			pm.logger.Info("心跳进程：已停止")
 			return
 		default:
 		}
@@ -119,6 +139,10 @@ func (pm *ProcessManager) runHeartbeatProcess() {
 		select {
 		case <-pm.ctx.Done():
 			return
+		case <-pm.heartbeatCtx.Done():
+			// Context被取消，正常停止，不重启
+			pm.logger.Info("心跳进程：已停止")
+			return
 		default:
 			pm.logger.Warn("心跳进程：异常退出，准备重启（延迟 %v）", pm.heartbeatRestartDelay)
 			time.Sleep(pm.heartbeatRestartDelay)
@@ -132,6 +156,12 @@ func (pm *ProcessManager) StartReporterProcess() {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
 
+	// 如果已经在运行，直接返回
+	if pm.reporterRunning {
+		pm.logger.Info("数据上报进程：已在运行，跳过启动")
+		return
+	}
+
 	// 如果已有上报进程在运行，先停止
 	if pm.reporterCancel != nil {
 		pm.reporterCancel()
@@ -139,6 +169,7 @@ func (pm *ProcessManager) StartReporterProcess() {
 
 	// 创建新的 context
 	pm.reporterCtx, pm.reporterCancel = context.WithCancel(pm.ctx)
+	pm.reporterRunning = true
 
 	pm.wg.Add(1)
 	go pm.runReporterProcess()
@@ -146,11 +177,20 @@ func (pm *ProcessManager) StartReporterProcess() {
 
 // runReporterProcess 运行数据上报进程（带自动重启）
 func (pm *ProcessManager) runReporterProcess() {
-	defer pm.wg.Done()
+	defer func() {
+		pm.mu.Lock()
+		pm.reporterRunning = false
+		pm.mu.Unlock()
+		pm.wg.Done()
+	}()
 
 	for {
 		select {
 		case <-pm.ctx.Done():
+			return
+		case <-pm.reporterCtx.Done():
+			// Context被取消，正常停止
+			pm.logger.Info("数据上报进程：已停止")
 			return
 		default:
 		}
@@ -173,6 +213,10 @@ func (pm *ProcessManager) runReporterProcess() {
 		// 上报进程退出，检查是否需要重启
 		select {
 		case <-pm.ctx.Done():
+			return
+		case <-pm.reporterCtx.Done():
+			// Context被取消，正常停止，不重启
+			pm.logger.Info("数据上报进程：已停止")
 			return
 		default:
 			pm.logger.Warn("数据上报进程：异常退出，准备重启（延迟 %v）", pm.reporterRestartDelay)
@@ -303,6 +347,7 @@ func (pm *ProcessManager) StopHeartbeat() {
 	if pm.heartbeatCancel != nil {
 		pm.heartbeatCancel()
 		pm.heartbeatCancel = nil
+		pm.heartbeatRunning = false
 	}
 	pm.logger.Info("心跳进程：已停止")
 }
@@ -315,6 +360,7 @@ func (pm *ProcessManager) StopReporter() {
 	if pm.reporterCancel != nil {
 		pm.reporterCancel()
 		pm.reporterCancel = nil
+		pm.reporterRunning = false
 	}
 	pm.logger.Info("数据上报进程：已停止")
 }

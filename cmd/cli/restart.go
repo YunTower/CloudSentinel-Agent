@@ -3,7 +3,10 @@ package cli
 import (
 	"fmt"
 	"os"
+	"syscall"
+	"time"
 
+	"agent/internal/daemon"
 	"agent/internal/systemd"
 
 	"github.com/spf13/cobra"
@@ -42,12 +45,42 @@ func runRestart(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	// 直接启动模式：先停止
-	stopCmd := &cobra.Command{}
-	stopCmd.SetArgs([]string{})
-	if err := runStop(stopCmd, []string{}); err != nil {
-		// 如果停止失败，继续尝试启动
-		printWarning(fmt.Sprintf("停止agent时出现警告: %v", err))
+	pid, running, err := daemon.CheckPIDFile(pidFile)
+	if err != nil {
+		// PID文件检查失败，继续尝试启动
+		printWarning(fmt.Sprintf("检查PID文件失败: %v", err))
+	} else if running {
+		// 发送SIGTERM信号
+		if err := daemon.SendSignal(pid, syscall.SIGTERM); err != nil {
+			printWarning(fmt.Sprintf("发送停止信号失败: %v", err))
+		} else {
+			printInfo(fmt.Sprintf("已发送停止信号 (PID: %d)", pid))
+
+			// 快速等待进程退出（最多等待2秒，每次检查200ms）
+			maxWait := 2 * time.Second
+			checkInterval := 200 * time.Millisecond
+			elapsed := time.Duration(0)
+
+			for elapsed < maxWait {
+				if !daemon.IsProcessRunning(pid) {
+					printSuccess("agent已停止")
+					daemon.RemovePID(pidFile)
+					break
+				}
+				time.Sleep(checkInterval)
+				elapsed += checkInterval
+			}
+
+			// 如果还在运行，尝试强制终止
+			if daemon.IsProcessRunning(pid) {
+				if err := daemon.SendSignal(pid, syscall.SIGKILL); err != nil {
+					printWarning(fmt.Sprintf("强制终止失败: %v", err))
+				} else {
+					printWarning("agent已强制终止")
+					daemon.RemovePID(pidFile)
+				}
+			}
+		}
 	}
 
 	// 再启动

@@ -70,15 +70,19 @@ func runStop(cmd *cobra.Command, args []string) error {
 
 	printInfo(fmt.Sprintf("已发送停止信号 (PID: %d)", pid))
 
-	// 等待进程退出（最多等待10秒）
-	for i := 0; i < 10; i++ {
+	// 等待进程退出
+	maxWait := 3 * time.Second
+	checkInterval := 200 * time.Millisecond
+	elapsed := time.Duration(0)
+
+	for elapsed < maxWait {
 		if !daemon.IsProcessRunning(pid) {
 			printSuccess("agent已停止")
 			daemon.RemovePID(pidFile)
 			return nil
 		}
-		// 等待1秒
-		time.Sleep(1 * time.Second)
+		time.Sleep(checkInterval)
+		elapsed += checkInterval
 	}
 
 	// 如果还在运行，尝试强制终止
