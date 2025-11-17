@@ -63,6 +63,9 @@ func (c *Collector) SendSystemInfo() error {
 		bootTime = time.Now()
 	}
 
+	// 使用统一的函数获取系统运行时间
+	systemUptime := c.System.GetUptime()
+
 	systemData := map[string]interface{}{
 		"agent_version": agentVersion,
 		"system_name":   hostInfo.Platform,
@@ -72,7 +75,7 @@ func (c *Collector) SendSystemInfo() error {
 		"hostname":      hostInfo.Hostname,
 		"cores":         c.System.GetCpuLogicCount(),
 		"boot_time":     bootTime.Format(time.RFC3339),
-		"uptime":        hostInfo.Uptime,
+		"uptime":        systemUptime,
 	}
 
 	message := websocket.Message{

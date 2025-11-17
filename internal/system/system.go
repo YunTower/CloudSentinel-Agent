@@ -22,9 +22,31 @@ func (s *System) GetHostInfo() *host.InfoStat {
 	return h
 }
 
-// GetBootTime 获取系统启动时间
+// GetBootTime 获取系统启动时间（Unix时间戳）
 func (s *System) GetBootTime() (uint64, error) {
 	return host.BootTime()
+}
+
+// GetUptime 获取系统运行时间
+func (s *System) GetUptime() uint64 {
+	hostInfo := s.GetHostInfo()
+	if hostInfo != nil && hostInfo.Uptime > 0 {
+		return hostInfo.Uptime
+	}
+
+	// 如果 hostInfo.Uptime 不可用，从 boot_time 计算
+	bootTimeUnix, err := s.GetBootTime()
+	if err != nil || bootTimeUnix == 0 {
+		return 0
+	}
+
+	// 计算从 boot_time 到现在的秒数
+	now := time.Now().Unix()
+	if int64(bootTimeUnix) > now {
+		return 0 // boot_time 异常，返回0
+	}
+
+	return uint64(now - int64(bootTimeUnix))
 }
 
 // GetMemoryTotal 总内存
