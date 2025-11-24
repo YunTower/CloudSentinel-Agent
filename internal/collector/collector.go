@@ -13,7 +13,7 @@ import (
 	"github.com/shirou/gopsutil/net"
 )
 
-const agentVersion = "0.0.1"
+const agentVersion = "0.0.1-release"
 
 type Collector struct {
 	System *system.System

@@ -5,6 +5,7 @@ import (
 	"agent/internal/logger"
 	"agent/internal/websocket"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"time"
@@ -205,6 +206,82 @@ func StartReporter(client *websocket.Client, logger *logger.Logger, cfg config.C
 							// TODO: 退出程序，由系统服务管理器（如systemd）自动重启
 							logger.Info("退出程序，等待系统服务管理器重启...")
 							os.Exit(0)
+						} else if commandData == "update" {
+							// 处理更新命令
+							updateData, ok := jsonData["data"].(map[string]interface{})
+							if !ok {
+								logger.Error("更新命令数据格式错误")
+								response := websocket.Message{
+									Type: "command_response",
+									Data: map[string]interface{}{
+										"command": "update",
+										"status":  "error",
+										"message": "更新命令数据格式错误",
+									},
+								}
+								client.SendMessage(response)
+								continue
+							}
+
+							version, _ := updateData["version"].(string)
+							versionType, _ := updateData["version_type"].(string)
+
+							if version == "" {
+								logger.Error("更新命令缺少版本号")
+								response := websocket.Message{
+									Type: "command_response",
+									Data: map[string]interface{}{
+										"command": "update",
+										"status":  "error",
+										"message": "更新命令缺少版本号",
+									},
+								}
+								client.SendMessage(response)
+								continue
+							}
+
+							logger.Info("收到更新命令，版本: %s, 类型: %s", version, versionType)
+
+							// 发送确认消息
+							response := websocket.Message{
+								Type: "command_response",
+								Data: map[string]interface{}{
+									"command": "update",
+									"status":  "success",
+									"message": "开始更新...",
+								},
+							}
+							if err := client.SendMessage(response); err != nil {
+								logger.Error("发送更新确认消息失败: %v", err)
+							}
+
+							go func() {
+								updateService := NewUpdateService(logger)
+								if err := updateService.UpdateAgent(version, versionType); err != nil {
+									logger.Error("更新失败: %v", err)
+									// 发送错误响应
+									errorResponse := websocket.Message{
+										Type: "command_response",
+										Data: map[string]interface{}{
+											"command": "update",
+											"status":  "error",
+											"message": fmt.Sprintf("更新失败: %v", err),
+										},
+									}
+									client.SendMessage(errorResponse)
+								} else {
+									// 发送成功响应
+									successResponse := websocket.Message{
+										Type: "command_response",
+										Data: map[string]interface{}{
+											"command": "update",
+											"status":  "success",
+											"message": "更新完成，正在重启...",
+										},
+									}
+									client.SendMessage(successResponse)
+								}
+							}()
 						} else {
 							logger.Warn("未知的命令: %s", commandData)
 						}
