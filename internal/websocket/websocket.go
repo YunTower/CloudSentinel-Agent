@@ -1,8 +1,10 @@
 package websocket
 
 import (
+	"agent/internal/crypto"
 	"agent/internal/logger"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"sync"
@@ -25,6 +27,9 @@ type Client struct {
 	MaxReconnect  int
 	mu            sync.Mutex
 	stopChan      chan struct{}
+	// 加密相关字段
+	SessionKey        []byte // AES 会话密钥
+	EncryptionEnabled bool   // 是否启用加密
 }
 
 func NewClient(api string, logger *logger.Logger) *Client {
@@ -194,6 +199,15 @@ func (c *Client) StartHeartbeat(ctx context.Context, healthChan chan<- bool, int
 }
 
 func (c *Client) SendMessage(content interface{}) error {
+	// 如果启用了加密，使用加密发送
+	if c.IsEncryptionEnabled() {
+		return c.WriteEncryptedJSON(content)
+	}
+	return c.writePlainJSON(content)
+}
+
+// writePlainJSON 发送明文 JSON 消息
+func (c *Client) writePlainJSON(content interface{}) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -215,6 +229,139 @@ func (c *Client) SendMessage(content interface{}) error {
 	}
 
 	return nil
+}
+
+// WriteEncryptedJSON 发送加密的 JSON 消息
+func (c *Client) WriteEncryptedJSON(v interface{}) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if !c.IsConnected || c.Conn == nil {
+		return fmt.Errorf("未连接")
+	}
+
+	// 获取会话密钥
+	sessionKey := c.getSessionKey()
+	if sessionKey == nil {
+		return fmt.Errorf("会话密钥未设置")
+	}
+
+	// 序列化 JSON
+	jsonData, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	// 使用 AES 加密
+	encryptedData, err := crypto.EncryptMessage(jsonData, sessionKey)
+	if err != nil {
+		return err
+	}
+
+	// Base64 编码
+	encryptedBase64 := base64.StdEncoding.EncodeToString(encryptedData)
+
+	// 构造加密消息格式
+	encryptedMsg := map[string]interface{}{
+		"encrypted": true,
+		"data":      encryptedBase64,
+	}
+
+	// 发送加密消息
+	data, err := json.Marshal(encryptedMsg)
+	if err != nil {
+		c.Logger.Error("将加密消息转换为 JSON 时出错: %v", err)
+		return err
+	}
+
+	err = c.Conn.WriteMessage(websocket.TextMessage, data)
+	if err != nil {
+		c.Logger.Error("发送加密消息时出错: %v", err)
+		c.IsConnected = false
+		return err
+	}
+
+	return nil
+}
+
+// ReadEncryptedMessage 读取加密消息
+func (c *Client) ReadEncryptedMessage() ([]byte, error) {
+	if !c.IsEncryptionEnabled() {
+		// 未启用加密，使用普通方式读取
+		_, message, err := c.Conn.ReadMessage()
+		return message, err
+	}
+
+	// 获取会话密钥
+	sessionKey := c.getSessionKey()
+	if sessionKey == nil {
+		return nil, fmt.Errorf("会话密钥未设置")
+	}
+
+	// 读取消息
+	_, message, err := c.Conn.ReadMessage()
+	if err != nil {
+		return nil, err
+	}
+
+	// 解析消息
+	var msg map[string]interface{}
+	if err := json.Unmarshal(message, &msg); err != nil {
+		return nil, err
+	}
+
+	// 检查是否是加密消息
+	encrypted, ok := msg["encrypted"].(bool)
+	if !ok || !encrypted {
+		// 不是加密消息，直接返回原始数据
+		return message, nil
+	}
+
+	// 获取加密数据
+	encryptedDataBase64, ok := msg["data"].(string)
+	if !ok {
+		return nil, fmt.Errorf("无效的加密消息格式")
+	}
+
+	// Base64 解码
+	encryptedData, err := base64.StdEncoding.DecodeString(encryptedDataBase64)
+	if err != nil {
+		return nil, err
+	}
+
+	// 使用 AES 解密
+	decryptedData, err := crypto.DecryptMessage(encryptedData, sessionKey)
+	if err != nil {
+		return nil, err
+	}
+
+	return decryptedData, nil
+}
+
+// EnableEncryption 启用加密
+func (c *Client) EnableEncryption(sessionKey []byte) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.SessionKey = make([]byte, len(sessionKey))
+	copy(c.SessionKey, sessionKey)
+	c.EncryptionEnabled = true
+}
+
+// IsEncryptionEnabled 检查是否启用加密
+func (c *Client) IsEncryptionEnabled() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.EncryptionEnabled
+}
+
+// getSessionKey 获取会话密钥（内部方法，需要加锁）
+func (c *Client) getSessionKey() []byte {
+	if c.SessionKey == nil {
+		return nil
+	}
+	key := make([]byte, len(c.SessionKey))
+	copy(key, c.SessionKey)
+	return key
 }
 
 func (c *Client) Close() {

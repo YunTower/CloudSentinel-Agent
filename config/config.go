@@ -16,10 +16,16 @@ type Config struct {
 	Server            string `json:"server"`
 	Key               string `json:"key"`
 	LogPath           string `json:"log_path"`
-	MetricsInterval   int    `json:"metrics_interval"`   // 性能指标上报间隔（秒），默认30
-	DetailInterval    int    `json:"detail_interval"`    // 详细信息上报间隔（秒），默认30
-	SystemInterval    int    `json:"system_interval"`    // 系统信息上报间隔（秒），默认30
-	HeartbeatInterval int    `json:"heartbeat_interval"` // 心跳间隔（秒），默认20
+	MetricsInterval   int    `json:"metrics_interval"`             // 性能指标上报间隔（秒），默认30
+	DetailInterval    int    `json:"detail_interval"`              // 详细信息上报间隔（秒），默认30
+	SystemInterval    int    `json:"system_interval"`              // 系统信息上报间隔（秒），默认30
+	HeartbeatInterval int    `json:"heartbeat_interval"`           // 心跳间隔（秒），默认20
+	AgentPrivateKey   string `json:"agent_private_key,omitempty"`  // Agent 私钥（PEM格式）
+	AgentPublicKey    string `json:"agent_public_key,omitempty"`   // Agent 公钥（PEM格式）
+	PanelPublicKey    string `json:"panel_public_key,omitempty"`   // 面板公钥（PEM格式）
+	PanelFingerprint  string `json:"panel_fingerprint,omitempty"`  // 面板公钥指纹
+	SessionKey        string `json:"session_key,omitempty"`        // AES 会话密钥（Base64编码字符串）
+	EncryptionEnabled bool   `json:"encryption_enabled,omitempty"` // 是否启用加密
 }
 
 // LoadConfigFromFile 从指定文件加载配置
@@ -209,11 +215,6 @@ func LoadConfig() Config {
 		}
 
 		fmt.Printf("配置不完整，缺少: %s\n", strings.Join(missingFields, "、"))
-		fmt.Println("")
-		fmt.Println("方式1: 使用命令行参数")
-		fmt.Println("  agent.exe --server=ws://xxx.xxx.xxx.xxx/ws/agent --key=your-agent-key")
-		fmt.Println("")
-		fmt.Println("方式2: 交互式输入缺失的配置（将更新 agent.lock.json 配置文件）")
 		fmt.Println("")
 
 		reader := bufio.NewReader(os.Stdin)
