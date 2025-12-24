@@ -258,23 +258,8 @@ func (c *Client) WriteEncryptedJSON(v interface{}) error {
 		return err
 	}
 
-	// Base64 编码
-	encryptedBase64 := base64.StdEncoding.EncodeToString(encryptedData)
-
-	// 构造加密消息格式
-	encryptedMsg := map[string]interface{}{
-		"encrypted": true,
-		"data":      encryptedBase64,
-	}
-
-	// 发送加密消息
-	data, err := json.Marshal(encryptedMsg)
-	if err != nil {
-		c.Logger.Error("将加密消息转换为 JSON 时出错: %v", err)
-		return err
-	}
-
-	err = c.Conn.WriteMessage(websocket.TextMessage, data)
+	// 直接发送二进制消息
+	err = c.Conn.WriteMessage(websocket.BinaryMessage, encryptedData)
 	if err != nil {
 		c.Logger.Error("发送加密消息时出错: %v", err)
 		c.IsConnected = false
@@ -299,43 +284,44 @@ func (c *Client) ReadEncryptedMessage() ([]byte, error) {
 	}
 
 	// 读取消息
-	_, message, err := c.Conn.ReadMessage()
+	messageType, message, err := c.Conn.ReadMessage()
 	if err != nil {
 		return nil, err
 	}
 
-	// 解析消息
+	// 如果是二进制消息，直接解密
+	if messageType == websocket.BinaryMessage {
+		decryptedData, err := crypto.DecryptMessage(message, sessionKey)
+		if err != nil {
+			return nil, err
+		}
+		return decryptedData, nil
+	}
+
+	// 尝试解析为 JSON
 	var msg map[string]interface{}
-	if err := json.Unmarshal(message, &msg); err != nil {
-		return nil, err
+	if err := json.Unmarshal(message, &msg); err == nil {
+		// 检查是否是加密消息
+		if encrypted, ok := msg["encrypted"].(bool); ok && encrypted {
+			// JSON 包装的加密消息
+			encryptedDataBase64, ok := msg["data"].(string)
+			if !ok {
+				return nil, fmt.Errorf("无效的加密消息格式")
+			}
+			encryptedData, err := base64.StdEncoding.DecodeString(encryptedDataBase64)
+			if err != nil {
+				return nil, err
+			}
+			decryptedData, err := crypto.DecryptMessage(encryptedData, sessionKey)
+			if err != nil {
+				return nil, err
+			}
+			return decryptedData, nil
+		}
 	}
 
-	// 检查是否是加密消息
-	encrypted, ok := msg["encrypted"].(bool)
-	if !ok || !encrypted {
-		// 不是加密消息，直接返回原始数据
-		return message, nil
-	}
-
-	// 获取加密数据
-	encryptedDataBase64, ok := msg["data"].(string)
-	if !ok {
-		return nil, fmt.Errorf("无效的加密消息格式")
-	}
-
-	// Base64 解码
-	encryptedData, err := base64.StdEncoding.DecodeString(encryptedDataBase64)
-	if err != nil {
-		return nil, err
-	}
-
-	// 使用 AES 解密
-	decryptedData, err := crypto.DecryptMessage(encryptedData, sessionKey)
-	if err != nil {
-		return nil, err
-	}
-
-	return decryptedData, nil
+	// 不是加密消息，直接返回原始数据
+	return message, nil
 }
 
 // EnableEncryption 启用加密
