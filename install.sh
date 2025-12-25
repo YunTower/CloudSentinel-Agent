@@ -265,6 +265,121 @@ extract_tar_gz() {
     fi
 }
 
+# 创建 cloudsentinel-agent 用户
+create_cloudsentinel_agent_user() {
+    local agent_dir=$1
+
+    # 检查是否有 root 权限
+    if [ "$EUID" -ne 0 ]; then
+        print_warning "创建用户需要 root 权限，将使用当前用户运行"
+        return 0
+    fi
+
+    # 检查用户是否已存在
+    if id "cloudsentinel-agent" &>/dev/null; then
+        print_info "用户 cloudsentinel-agent 已存在"
+    else
+        print_info "正在创建 cloudsentinel-agent 用户..."
+        # 创建系统用户（无登录 shell，无主目录）
+        if useradd -r -s /bin/false cloudsentinel-agent 2>/dev/null; then
+            print_success "用户 cloudsentinel-agent 创建成功"
+        else
+            print_warning "创建用户失败，将使用当前用户运行"
+            return 0
+        fi
+    fi
+
+    # 设置目录所有权（同时授予 root 组访问权限）
+    print_info "正在设置目录权限..."
+    if chown -R cloudsentinel-agent:root "$agent_dir"; then
+        print_success "目录权限设置成功"
+    else
+        print_warning "设置目录权限失败"
+        return 0
+    fi
+
+    # 设置目录权限：
+    # - 2770: owner/group 可读写执行，其他无权限；setgid 确保新文件继承 root 组
+    chmod 2770 "$agent_dir"
+
+    return 0
+}
+
+# 确保 cloudsentinel-agent 用户可以进入安装目录（修复父目录不可 traverse 导致的 cd 失败）
+ensure_cloudsentinel_agent_can_access_dir() {
+    local base_dir=$1
+    local target_dir=$2
+
+    # 仅在 root 且 cloudsentinel-agent 用户存在时处理
+    if [ "$EUID" -ne 0 ] || ! id "cloudsentinel-agent" &>/dev/null; then
+        return 0
+    fi
+
+    # 若已可进入则直接返回
+    if sudo -u cloudsentinel-agent test -d "$target_dir" 2>/dev/null && sudo -u cloudsentinel-agent test -x "$target_dir" 2>/dev/null; then
+        return 0
+    fi
+
+    print_warning "cloudsentinel-agent 用户无法进入安装目录，尝试修复父目录权限（最小化授权）..."
+
+    # 优先使用 ACL（更安全：不需要放开整个 base_dir 的访问权限）
+    if command -v setfacl &>/dev/null; then
+        # 允许 cloudsentinel-agent traverse base_dir，允许其访问 target_dir
+        setfacl -m "u:cloudsentinel-agent:--x" "$base_dir" || true
+        setfacl -m "u:cloudsentinel-agent:rwx" "$target_dir" || true
+        # 让 target_dir 下新建文件默认也给 cloudsentinel-agent rwx（避免后续写入问题）
+        setfacl -d -m "u:cloudsentinel-agent:rwx" "$target_dir" || true
+    else
+        print_warning "未检测到 setfacl，将退化为 chmod o+x 方式放开父目录可进入权限"
+        chmod o+x "$base_dir" || true
+    fi
+
+    # 再次校验
+    if ! sudo -u cloudsentinel-agent test -d "$target_dir" 2>/dev/null || ! sudo -u cloudsentinel-agent test -x "$target_dir" 2>/dev/null; then
+        print_warning "仍无法让 cloudsentinel-agent 进入安装目录：$target_dir"
+        print_warning "建议将安装目录选在 /opt 或 /srv 等公共路径，例如：/opt/cloudsentinel-agent"
+        return 0
+    fi
+
+    return 0
+}
+
+# 检查是否为 root 且 cloudsentinel-agent 用户存在
+is_root_with_cloudsentinel_agent() {
+    [ "$EUID" -eq 0 ] && id "cloudsentinel-agent" &>/dev/null
+}
+
+# 显示手动执行命令提示
+show_manual_command() {
+    local cmd=$1
+    if id "cloudsentinel-agent" &>/dev/null; then
+        echo -e "  ${CYAN}sudo -u cloudsentinel-agent $INSTALL_DIR/agent $cmd${NC}"
+    else
+        echo -e "  ${CYAN}cd $INSTALL_DIR${NC}"
+        echo -e "  ${CYAN}./agent $cmd${NC}"
+    fi
+}
+
+# 以 cloudsentinel-agent 用户执行命令
+run_as_cloudsentinel_agent() {
+    local command=$1
+    local working_dir=$2
+
+    if is_root_with_cloudsentinel_agent; then
+        if [ -n "$working_dir" ]; then
+            sudo -u cloudsentinel-agent sh -c "cd '$working_dir' && $command"
+        else
+            sudo -u cloudsentinel-agent sh -c "$command"
+        fi
+    else
+        if [ -n "$working_dir" ]; then
+            (cd "$working_dir" && eval "$command")
+        else
+            eval "$command"
+        fi
+    fi
+}
+
 # 主安装流程
 main() {
     clear
@@ -347,16 +462,34 @@ main() {
 
     # 询问安装目录
     echo ""
-    read -p "$(echo -e ${CYAN}请输入安装目录${NC} $(echo -e ${YELLOW}[默认: $(pwd)]${NC}): )" INSTALL_DIR
-    INSTALL_DIR=${INSTALL_DIR:-$(pwd)}
+    read -p "$(echo -e ${CYAN}请输入安装目录${NC} $(echo -e ${YELLOW}[默认: $(pwd)]${NC}): )" BASE_INSTALL_DIR
+    BASE_INSTALL_DIR=${BASE_INSTALL_DIR:-$(pwd)}
 
-    # 创建安装目录
+    # 创建基础安装目录
+    if [ ! -d "$BASE_INSTALL_DIR" ]; then
+        mkdir -p "$BASE_INSTALL_DIR"
+    fi
+
+    BASE_INSTALL_DIR=$(cd "$BASE_INSTALL_DIR" && pwd)
+    
+    # 创建 cloudsentinel-agent 子目录
+    INSTALL_DIR="$BASE_INSTALL_DIR/cloudsentinel-agent"
+    print_info "基础安装目录: ${BOLD}$BASE_INSTALL_DIR${NC}"
+    print_info "CloudSentinel Agent 目录: ${BOLD}$INSTALL_DIR${NC}"
+
+    # 创建 cloudsentinel-agent 目录
     if [ ! -d "$INSTALL_DIR" ]; then
         mkdir -p "$INSTALL_DIR"
     fi
 
-    INSTALL_DIR=$(cd "$INSTALL_DIR" && pwd)
-    print_info "安装目录: ${BOLD}$INSTALL_DIR${NC}"
+    # 创建 cloudsentinel-agent 用户并设置权限
+    if ! create_cloudsentinel_agent_user "$INSTALL_DIR"; then
+        print_warning "用户创建失败，将使用当前用户运行"
+    fi
+
+    if ! ensure_cloudsentinel_agent_can_access_dir "$BASE_INSTALL_DIR" "$INSTALL_DIR"; then
+        print_warning "目录访问修复失败，后续操作可能需要手动执行"
+    fi
 
     # 复制二进制文件
     INSTALLED_BINARY="$INSTALL_DIR/agent"
@@ -364,10 +497,18 @@ main() {
     print_info "正在复制二进制文件..."
     if cp "$EXTRACTED_BINARY" "$INSTALLED_BINARY"; then
         chmod +x "$INSTALLED_BINARY"
+        is_root_with_cloudsentinel_agent && chown cloudsentinel-agent:root "$INSTALLED_BINARY"
         print_success "二进制文件已复制"
     else
         print_error "复制二进制文件失败"
         exit 1
+    fi
+    
+    # 设置所有文件的所有权
+    if is_root_with_cloudsentinel_agent; then
+        print_info "正在设置文件所有权..."
+        chown -R cloudsentinel-agent:root "$INSTALL_DIR"
+        print_success "文件所有权设置完成"
     fi
 
     # 完成
@@ -382,6 +523,34 @@ main() {
     echo -e "  版本: ${BOLD}$TAG_NAME${NC}"
     echo -e "  安装目录: ${BOLD}$INSTALL_DIR${NC}"
     echo -e "  二进制文件: ${BOLD}$INSTALLED_BINARY${NC}"
+    echo ""
+    
+    # 显示使用提示
+    echo -e "${BOLD}${CYAN}使用提示：${NC}"
+    echo -e "  1. 配置 Agent："
+    echo -e "     ${CYAN}cd $INSTALL_DIR${NC}"
+    if id "cloudsentinel-agent" &>/dev/null; then
+        echo -e "     ${CYAN}sudo -u cloudsentinel-agent ./agent config${NC}"
+    else
+        echo -e "     ${CYAN}./agent config${NC}"
+    fi
+    echo ""
+    echo -e "  2. 启动 Agent："
+    if id "cloudsentinel-agent" &>/dev/null; then
+        echo -e "     ${CYAN}sudo -u cloudsentinel-agent $INSTALL_DIR/agent start${NC}"
+    else
+        echo -e "     ${CYAN}cd $INSTALL_DIR && ./agent start${NC}"
+    fi
+    echo ""
+    echo -e "  3. 查看状态："
+    if id "cloudsentinel-agent" &>/dev/null; then
+        echo -e "     ${CYAN}sudo -u cloudsentinel-agent $INSTALL_DIR/agent status${NC}"
+    else
+        echo -e "     ${CYAN}cd $INSTALL_DIR && ./agent status${NC}"
+    fi
+    echo ""
+    echo -e "  4. 查看帮助："
+    echo -e "     ${CYAN}cd $INSTALL_DIR && ./agent --help${NC}"
     echo ""
 }
 
