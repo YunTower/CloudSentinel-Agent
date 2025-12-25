@@ -16,7 +16,7 @@ var (
 var rootCmd = &cobra.Command{
 	Use:     "agent",
 	Short:   "CloudSentinel Agent",
-	Long:    `CloudSentinel Agent 是云哨 (CloudSentinel) 的Agent端，用于收集系统信息并上报到云哨控制面板。`,
+	Long:    `CloudSentinel Agent - 云哨 (CloudSentinel) Agent端`,
 	Version: "0.0.1",
 }
 
