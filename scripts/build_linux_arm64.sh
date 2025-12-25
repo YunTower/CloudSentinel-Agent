@@ -2,21 +2,25 @@
 
 set -e
 
+cd "$(dirname "$0")/.."
+
 GOOS=linux
 GOARCH=arm64
 CGO_ENABLED=0
 
 echo "Building agent for Linux ARM64..."
-go build -o agent ./cmd/agent/main.go
+BINARY_NAME="agent-linux-arm64"
+go build -o "$BINARY_NAME" ./cmd/agent/main.go
 
 # 生成 SHA256 文件
-if [ -f agent ]; then
+if [ -f "$BINARY_NAME" ]; then
     SHA256_FILE="agent-linux-arm64.sha256"
-    sha256sum agent | awk '{print $1}' > "$SHA256_FILE"
+    sha256sum "$BINARY_NAME" | awk '{print $1}' > "$SHA256_FILE"
     echo "SHA256 file generated: $SHA256_FILE"
     echo "SHA256: $(cat $SHA256_FILE)"
+    echo "Binary file: $BINARY_NAME"
 else
-    echo "Error: agent file not found, cannot generate SHA256"
+    echo "Error: $BINARY_NAME file not found, cannot generate SHA256"
     exit 1
 fi
 
