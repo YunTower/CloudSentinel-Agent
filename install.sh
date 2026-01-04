@@ -624,63 +624,19 @@ main() {
     echo ""
 
     # 显示安装信息
-    echo -e "${BOLD}安装信息：${NC}"
+    echo -e "${BOLD}${GREEN}安装信息：${NC}"
     echo -e "  版本: ${BOLD}$TAG_NAME${NC}"
     echo -e "  安装目录: ${BOLD}$INSTALL_DIR${NC}"
     echo -e "  二进制文件: ${BOLD}$INSTALLED_BINARY${NC}"
     echo ""
     
-    # 全局命令提示
+    # 显示使用提示
     if command -v cloudsentinel-agent &>/dev/null; then
-        echo -e "${BOLD}${GREEN}全局命令：${NC}"
-        echo -e "  现在可以在任意位置使用 ${BOLD}cloudsentinel-agent${NC} 命令"
-        echo -e "  例如: ${CYAN}cloudsentinel-agent config${NC} 或 ${CYAN}cloudsentinel-agent start${NC}"
+        echo -e "${BOLD}${GREEN}使用提示：${NC}"
+        echo -e "  你可以在任意位置使用 ${BOLD}cloudsentinel-agent${NC} 命令来查看cli帮助"
+        echo -e "  接下来，你需要执行 ${CYAN}cloudsentinel-agent start${NC} 来启动Agent"
         echo ""
     fi
-    
-    # 显示使用提示
-    echo -e "${BOLD}${CYAN}使用提示：${NC}"
-    echo -e "  1. 配置 Agent："
-    if command -v cloudsentinel-agent &>/dev/null; then
-        echo -e "     ${CYAN}cloudsentinel-agent config${NC}"
-    else
-        echo -e "     ${CYAN}cd $INSTALL_DIR${NC}"
-        if id "cloudsentinel-agent" &>/dev/null; then
-            echo -e "     ${CYAN}sudo -u cloudsentinel-agent ./agent config${NC}"
-        else
-            echo -e "     ${CYAN}./agent config${NC}"
-        fi
-    fi
-    echo ""
-    echo -e "  2. 启动 Agent："
-    if command -v cloudsentinel-agent &>/dev/null; then
-        echo -e "     ${CYAN}cloudsentinel-agent start${NC}"
-    else
-        if id "cloudsentinel-agent" &>/dev/null; then
-            echo -e "     ${CYAN}sudo -u cloudsentinel-agent $INSTALL_DIR/agent start${NC}"
-        else
-            echo -e "     ${CYAN}cd $INSTALL_DIR && ./agent start${NC}"
-        fi
-    fi
-    echo ""
-    echo -e "  3. 查看状态："
-    if command -v cloudsentinel-agent &>/dev/null; then
-        echo -e "     ${CYAN}cloudsentinel-agent status${NC}"
-    else
-        if id "cloudsentinel-agent" &>/dev/null; then
-            echo -e "     ${CYAN}sudo -u cloudsentinel-agent $INSTALL_DIR/agent status${NC}"
-        else
-            echo -e "     ${CYAN}cd $INSTALL_DIR && ./agent status${NC}"
-        fi
-    fi
-    echo ""
-    echo -e "  4. 查看帮助："
-    if command -v cloudsentinel-agent &>/dev/null; then
-        echo -e "     ${CYAN}cloudsentinel-agent --help${NC}"
-    else
-        echo -e "     ${CYAN}cd $INSTALL_DIR && ./agent --help${NC}"
-    fi
-    echo ""
 }
 
 # 执行主函数
