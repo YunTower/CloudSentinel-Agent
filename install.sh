@@ -479,6 +479,32 @@ run_as_cloudsentinel_agent() {
 
 # 主安装流程
 main() {
+    # 解析命令行参数
+    SERVER_URL=""
+    AGENT_KEY=""
+    DAEMON_MODE=false
+
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --server=*)
+                SERVER_URL="${1#*=}"
+                shift
+                ;;
+            --key=*)
+                AGENT_KEY="${1#*=}"
+                shift
+                ;;
+            --daemon)
+                DAEMON_MODE=true
+                shift
+                ;;
+            *)
+                print_warning "未知参数: $1"
+                shift
+                ;;
+        esac
+    done
+
     clear
     echo -e "${BOLD}${CYAN}"
     echo "CloudSentinel Agent 安装脚本"
@@ -608,12 +634,64 @@ main() {
         print_success "文件所有权设置完成"
     fi
 
+    # 如果提供了配置参数，则写入配置文件
+    if [ -n "$SERVER_URL" ] && [ -n "$AGENT_KEY" ]; then
+        print_info "正在写入配置文件..."
+        CONFIG_FILE="$INSTALL_DIR/agent.lock.json"
+        
+        # 使用 jq 创建 JSON 配置，否则使用 printf
+        if command -v jq &> /dev/null; then
+            jq -n \
+                --arg server "$SERVER_URL" \
+                --arg key "$AGENT_KEY" \
+                --arg log_path "logs" \
+                '{server: $server, key: $key, log_path: $log_path}' > "$CONFIG_FILE"
+        else
+            # 使用 printf 直接写入 JSON
+            printf '{\n  "server": "%s",\n  "key": "%s",\n  "log_path": "logs"\n}' "$SERVER_URL" "$AGENT_KEY" > "$CONFIG_FILE"
+        fi
+        
+        # 设置文件权限
+        chmod 644 "$CONFIG_FILE"
+        if is_root_with_cloudsentinel_agent; then
+            chown cloudsentinel-agent:root "$CONFIG_FILE"
+        fi
+        
+        print_success "配置文件已写入: $CONFIG_FILE"
+    elif [ -n "$SERVER_URL" ] || [ -n "$AGENT_KEY" ]; then
+        print_warning "配置参数不完整（缺少 server 或 key），将跳过配置文件写入"
+    fi
+
     # 创建全局命令
     echo ""
     if create_global_command "$INSTALL_DIR" "$INSTALLED_BINARY"; then
         print_success "全局命令创建成功"
     else
         print_warning "全局命令创建失败，您仍可以使用完整路径执行命令"
+    fi
+
+    # 自动启动 agent
+    AUTO_STARTED=false
+    if [ -n "$SERVER_URL" ] && [ -n "$AGENT_KEY" ]; then
+        echo ""
+        print_step "正在启动 agent..."
+        
+        # 构建启动命令
+        START_CMD="./agent start"
+        if [ "$DAEMON_MODE" = true ]; then
+            START_CMD="$START_CMD --daemon"
+        fi
+        
+        # 执行启动命令
+        if run_as_cloudsentinel_agent "$START_CMD" "$INSTALL_DIR"; then
+            print_success "agent 已启动"
+            AUTO_STARTED=true
+            if [ "$DAEMON_MODE" = true ]; then
+                print_info "agent 正在后台运行（守护进程模式）"
+            fi
+        else
+            print_warning "自动启动失败，请手动执行: cd $INSTALL_DIR && $START_CMD"
+        fi
     fi
 
     # 完成
@@ -628,14 +706,44 @@ main() {
     echo -e "  版本: ${BOLD}$TAG_NAME${NC}"
     echo -e "  安装目录: ${BOLD}$INSTALL_DIR${NC}"
     echo -e "  二进制文件: ${BOLD}$INSTALLED_BINARY${NC}"
+    if [ -n "$SERVER_URL" ] && [ -n "$AGENT_KEY" ]; then
+        echo -e "  配置文件: ${BOLD}$INSTALL_DIR/agent.lock.json${NC}"
+    fi
     echo ""
     
     # 显示使用提示
-    if command -v cloudsentinel-agent &>/dev/null; then
-        echo -e "${BOLD}${GREEN}使用提示：${NC}"
-        echo -e "  你可以在任意位置使用 ${BOLD}cloudsentinel-agent${NC} 命令来查看cli帮助"
-        echo -e "  接下来，你需要执行 ${CYAN}cloudsentinel-agent start${NC} 来启动Agent"
+    if [ "$AUTO_STARTED" = true ]; then
+        echo -e "${BOLD}${GREEN}启动状态：${NC}"
+        if [ "$DAEMON_MODE" = true ]; then
+            echo -e "  ${GREEN}✓${NC} agent 已使用守护进程模式启动"
+        else
+            echo -e "  ${GREEN}✓${NC} agent 已启动"
+        fi
         echo ""
+        if command -v cloudsentinel-agent &>/dev/null; then
+            echo -e "${BOLD}${GREEN}使用提示：${NC}"
+            echo -e "  你可以在任意位置使用 ${BOLD}cloudsentinel-agent${NC} 命令来管理 agent"
+            echo -e "  查看状态: ${CYAN}cloudsentinel-agent status${NC}"
+            echo -e "  查看日志: ${CYAN}cloudsentinel-agent logs${NC}"
+            echo ""
+        fi
+    elif [ -n "$SERVER_URL" ] || [ -n "$AGENT_KEY" ]; then
+        echo -e "${BOLD}${YELLOW}配置提示：${NC}"
+        echo -e "  配置参数不完整，请手动配置后启动 agent"
+        echo ""
+        if command -v cloudsentinel-agent &>/dev/null; then
+            echo -e "${BOLD}${GREEN}使用提示：${NC}"
+            echo -e "  你可以在任意位置使用 ${BOLD}cloudsentinel-agent${NC} 命令来查看cli帮助"
+            echo -e "  配置完成后，执行 ${CYAN}cloudsentinel-agent start${NC} 来启动Agent"
+            echo ""
+        fi
+    else
+        if command -v cloudsentinel-agent &>/dev/null; then
+            echo -e "${BOLD}${GREEN}使用提示：${NC}"
+            echo -e "  你可以在任意位置使用 ${BOLD}cloudsentinel-agent${NC} 命令来查看cli帮助"
+            echo -e "  接下来，你需要执行 ${CYAN}cloudsentinel-agent start${NC} 来启动Agent"
+            echo ""
+        fi
     fi
 }
 
