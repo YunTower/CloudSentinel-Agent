@@ -1,0 +1,129 @@
+name: Release Build and Publish
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN || github.token }}
+      AGENT_REPO: ${{ github.repository }}
+
+    steps:
+      - name: Checkout agent repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: false
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Get tag name
+        id: tag
+        run: |
+          # 对于 create 事件，使用 github.event.ref 获取 tag 名称
+          TAG_NAME="${{ github.event.ref }}"
+          # 如果 TAG_NAME 包含 refs/tags/，则去掉前缀
+          TAG_NAME=${TAG_NAME#refs/tags/}
+          VERSION=${TAG_NAME#v}
+          echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Tag: $TAG_NAME"
+          echo "Version: $VERSION"
+
+      - name: Build agent for Linux AMD64 using script
+        run: |
+          chmod +x scripts/build_ci.sh
+          ./scripts/build_ci.sh "${{ steps.tag.outputs.version }}" linux amd64
+
+      - name: Build agent for Linux ARM64 using script
+        run: |
+          chmod +x scripts/build_ci.sh
+          ./scripts/build_ci.sh "${{ steps.tag.outputs.version }}" linux arm64
+
+      - name: Get agent changelog
+        id: agent_changelog
+        run: |
+          TAG_NAME="${{ steps.tag.outputs.tag_name }}"
+          REPO_URL="https://github.com/${{ github.repository }}"
+          cd ${{ github.workspace }}
+          
+          # 获取所有 tags（使用 --force 避免标签冲突）
+          git fetch --tags --force
+          
+          # 获取所有 tag 列表，按版本排序
+          ALL_TAGS=$(git tag -l "v*" | sort -V)
+          
+          # 查找当前 tag 的上一个 tag
+          PREV_TAG=""
+          for tag in $ALL_TAGS; do
+            if [ "$tag" = "$TAG_NAME" ]; then
+              break
+            fi
+            PREV_TAG=$tag
+          done
+          
+          if [ -z "$PREV_TAG" ]; then
+            # 如果没有上一个 tag，获取所有提交
+            echo "No previous tag found, getting all commits"
+            RAW_COMMITS=$(git log --pretty=format:"%H|%h|%s" --reverse)
+          else
+            # 获取两个 tag 之间的提交
+            echo "Previous tag: $PREV_TAG"
+            RAW_COMMITS=$(git log ${PREV_TAG}..${TAG_NAME} --pretty=format:"%H|%h|%s")
+          fi
+          
+          # 如果没有提交，设置默认值
+          if [ -z "$RAW_COMMITS" ]; then
+            COMMITS="- 无变更"
+          else
+            # 处理每个提交，将 hash 和 PR 编号转换为链接
+            COMMITS=$(echo "$RAW_COMMITS" | while IFS='|' read -r full_hash short_hash message; do
+              # 将 hash 转换为链接
+              hash_link="[${short_hash}](${REPO_URL}/commit/${full_hash})"
+              # 将 PR 编号转换为链接（匹配 #数字 格式）
+              linked_message=$(echo "$message" | sed -E "s/#([0-9]+)/[#\1](${REPO_URL}\/pull\/\1)/g")
+              echo "- ${hash_link} ${linked_message}"
+            done)
+          fi
+          
+          echo "agent_commits<<EOF" >> $GITHUB_OUTPUT
+          echo "$COMMITS" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Prepare release notes
+        id: release_notes
+        run: |
+          TAG_NAME="${{ steps.tag.outputs.tag_name }}"
+          AGENT_COMMITS="${{ steps.agent_changelog.outputs.agent_commits }}"
+          
+          echo "release_notes<<EOF" >> $GITHUB_OUTPUT
+          echo "# 🎉 $TAG_NAME" >> $GITHUB_OUTPUT
+          echo "Agent Changes：" >> $GITHUB_OUTPUT
+          echo "$AGENT_COMMITS" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.tag.outputs.tag_name }}
+          name: Release ${{ steps.tag.outputs.tag_name }}
+          body: ${{ steps.release_notes.outputs.release_notes }}
+          files: |
+            agent-linux-amd64.tar.gz
+            agent-linux-amd64.sha256
+            agent-linux-arm64.tar.gz
+            agent-linux-arm64.sha256
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN || github.token }}

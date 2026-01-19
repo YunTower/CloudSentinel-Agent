@@ -17,7 +17,7 @@ var rootCmd = &cobra.Command{
 	Use:     "agent",
 	Short:   "CloudSentinel Agent",
 	Long:    `CloudSentinel Agent - 云哨 (CloudSentinel) Agent端`,
-	Version: "0.0.1",
+	Version: "0.0.1-beta.1",
 }
 
 // Execute 执行根命令
