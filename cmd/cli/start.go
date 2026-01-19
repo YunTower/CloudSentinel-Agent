@@ -52,15 +52,20 @@ func runStart(cmd *cobra.Command, args []string) error {
 
 		// 需要root权限操作systemd服务
 		if os.Geteuid() != 0 {
-			printWarning("需要root权限启动服务")
-			printInfo("请使用: sudo ./agent start")
+			printWarning("需要root权限启动systemd服务")
+			printInfo("请使用以下命令之一：")
+			fmt.Println("  sudo ./agent start")
+			fmt.Println("  sudo systemctl start cloudsentinel-agent")
 			return fmt.Errorf("需要root权限")
 		}
 
 		// 使用systemd启动
 		if err := systemd.StartService(); err != nil {
 			printError(fmt.Sprintf("启动失败: %v", err))
-			printInfo("使用 './agent logs' 查看详细错误信息")
+			printInfo("使用以下命令查看详细错误信息：")
+			fmt.Println("  sudo systemctl status cloudsentinel-agent")
+			fmt.Println("  sudo journalctl -u cloudsentinel-agent -n 50")
+			fmt.Println("  ./agent logs")
 			return err
 		}
 
@@ -70,7 +75,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 		for i := 0; i < 3; i++ {
 			active, err := systemd.IsServiceActive()
 			if err == nil && active {
-				printSuccess("agent已启动")
+				printSuccess("agent已通过systemd服务启动")
 				return nil
 			}
 			if i < 2 {
@@ -80,7 +85,9 @@ func runStart(cmd *cobra.Command, args []string) error {
 
 		// 如果还没启动，给出提示但不阻塞
 		printInfo("启动命令已执行，服务正在启动中")
-		printInfo("使用 './agent status' 查看状态，'./agent logs' 查看日志")
+		printInfo("使用以下命令查看状态：")
+		fmt.Println("  sudo systemctl status cloudsentinel-agent")
+		fmt.Println("  ./agent status")
 		return nil
 	}
 
@@ -120,6 +127,20 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// 写入PID文件（仅在非systemd环境中）
 	if !isRunningUnderSystemd() {
 		if err := daemon.WritePID(pidFile); err != nil {
+			printError(fmt.Sprintf("写入PID文件失败: %v", err))
+			printWarning("建议使用以下方式之一：")
+			fmt.Println()
+			printInfo("方案1：使用 systemd 服务管理（推荐）")
+			fmt.Println("  sudo ./agent install  # 安装 systemd 服务")
+			fmt.Println("  sudo ./agent start     # 启动服务")
+			fmt.Println()
+			printInfo("方案2：指定其他 PID 文件路径")
+			fmt.Printf("  ./agent start --pidfile ~/.cloudsentinel-agent.pid\n")
+			fmt.Printf("  或\n")
+			fmt.Printf("  ./agent start --pidfile /tmp/cloudsentinel-agent.pid\n")
+			fmt.Println()
+			printInfo("方案3：使用守护进程模式（不写入 PID 文件）")
+			fmt.Println("  ./agent start --daemon")
 			return fmt.Errorf("写入PID文件失败: %w", err)
 		}
 		defer daemon.RemovePID(pidFile)

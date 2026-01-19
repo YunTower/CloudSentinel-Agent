@@ -30,18 +30,23 @@ func runRestart(cmd *cobra.Command, args []string) error {
 	if systemd.ServiceExists() {
 		// 需要root权限操作systemd服务
 		if os.Geteuid() != 0 {
-			printWarning("需要root权限重启服务")
-			printInfo("请使用: sudo ./agent restart")
+			printWarning("需要root权限重启systemd服务")
+			printInfo("请使用以下命令之一：")
+			fmt.Println("  sudo ./agent restart")
+			fmt.Println("  sudo systemctl restart cloudsentinel-agent")
 			return fmt.Errorf("需要root权限")
 		}
 
 		// 使用systemd重启
 		if err := systemd.RestartService(); err != nil {
 			printError(fmt.Sprintf("重启失败: %v", err))
+			printInfo("使用以下命令查看详细错误信息：")
+			fmt.Println("  sudo systemctl status cloudsentinel-agent")
+			fmt.Println("  sudo journalctl -u cloudsentinel-agent -n 50")
 			return err
 		}
 
-		printSuccess("agent已重启")
+		printSuccess("agent已通过systemd服务重启")
 		return nil
 	}
 

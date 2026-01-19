@@ -9,7 +9,9 @@ import (
 )
 
 const (
-	// PIDFile 默认PID文件路径
+	// PIDFile 默认PID文件路径（已弃用，请使用命令行参数或环境变量）
+	// 实际默认路径由 cmd/cli/root.go 中的 getDefaultPIDFile() 函数决定
+	// 此常量仅保留用于向后兼容
 	PIDFile = "/var/run/cloudsentinel-agent.pid"
 )
 
