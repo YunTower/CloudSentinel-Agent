@@ -477,6 +477,130 @@ run_as_cloudsentinel_agent() {
     fi
 }
 
+# 检测 systemd 是否已安装
+check_systemd() {
+    # 检查 systemctl 命令是否存在
+    if command -v systemctl &> /dev/null; then
+        # 检查 systemd 是否正在运行
+        if systemctl --version &> /dev/null; then
+            return 0
+        fi
+    fi
+    return 1
+}
+
+# 检测 Linux 发行版
+detect_distro() {
+    if [ -f /etc/os-release ]; then
+        . /etc/os-release
+        DISTRO_ID="$ID"
+        DISTRO_VERSION_ID="$VERSION_ID"
+    elif [ -f /etc/redhat-release ]; then
+        # 旧版 CentOS/RHEL
+        if grep -q "CentOS" /etc/redhat-release; then
+            DISTRO_ID="centos"
+        elif grep -q "Red Hat" /etc/redhat-release; then
+            DISTRO_ID="rhel"
+        fi
+    elif [ -f /etc/debian_version ]; then
+        DISTRO_ID="debian"
+    fi
+}
+
+# 安装 systemd
+install_systemd() {
+    if [ "$EUID" -ne 0 ]; then
+        print_error "安装 systemd 需要 root 权限，请使用 sudo 运行安装脚本"
+        return 1
+    fi
+
+    detect_distro
+
+    print_info "检测到 Linux 发行版: ${BOLD}$DISTRO_ID${NC}"
+
+    case "$DISTRO_ID" in
+        ubuntu|debian)
+            print_info "正在安装 systemd..."
+            if apt-get update && apt-get install -y systemd; then
+                print_success "systemd 安装成功"
+                return 0
+            else
+                print_error "systemd 安装失败"
+                return 1
+            fi
+            ;;
+        centos|rhel|fedora|rocky|almalinux)
+            print_info "正在安装 systemd..."
+            if command -v dnf &> /dev/null; then
+                if dnf install -y systemd; then
+                    print_success "systemd 安装成功"
+                    return 0
+                else
+                    print_error "systemd 安装失败"
+                    return 1
+                fi
+            elif command -v yum &> /dev/null; then
+                if yum install -y systemd; then
+                    print_success "systemd 安装成功"
+                    return 0
+                else
+                    print_error "systemd 安装失败"
+                    return 1
+                fi
+            else
+                print_error "未找到包管理器 (dnf/yum)"
+                return 1
+            fi
+            ;;
+        *)
+            print_warning "未识别的 Linux 发行版: $DISTRO_ID"
+            print_info "请手动安装 systemd，或使用以下命令："
+            echo -e "  ${CYAN}Ubuntu/Debian:${NC} sudo apt-get install systemd"
+            echo -e "  ${CYAN}CentOS/RHEL:${NC} sudo yum install systemd"
+            echo -e "  ${CYAN}Fedora:${NC} sudo dnf install systemd"
+            return 1
+            ;;
+    esac
+}
+
+# 安装并启用 systemd 服务
+install_agent_service() {
+    local install_dir=$1
+    local binary_path="$install_dir/agent"
+
+    if [ "$EUID" -ne 0 ]; then
+        print_warning "安装 systemd 服务需要 root 权限"
+        print_info "请使用以下命令安装服务："
+        echo -e "  ${CYAN}sudo $binary_path install${NC}"
+        return 1
+    fi
+
+    # 检查二进制文件是否存在
+    if [ ! -f "$binary_path" ]; then
+        print_error "二进制文件不存在: $binary_path"
+        return 1
+    fi
+
+    print_step "正在安装 systemd 服务..."
+
+    # 使用 agent 的 install 命令安装服务
+    if "$binary_path" install; then
+        print_success "systemd 服务安装成功"
+        
+        # 重新加载 systemd daemon
+        if systemctl daemon-reload; then
+            print_success "systemd daemon 已重新加载"
+        else
+            print_warning "重新加载 systemd daemon 失败"
+        fi
+
+        return 0
+    else
+        print_error "systemd 服务安装失败"
+        return 1
+    fi
+}
+
 # 主安装流程
 main() {
     # 解析命令行参数
@@ -670,27 +794,102 @@ main() {
         print_warning "全局命令创建失败，您仍可以使用完整路径执行命令"
     fi
 
+    # 检测并安装 systemd 服务
+    SYSTEMD_INSTALLED=false
+    echo ""
+    print_step "检查 systemd 支持..."
+    
+    if check_systemd; then
+        print_success "systemd 已安装"
+        SYSTEMD_INSTALLED=true
+        
+        # 尝试安装 systemd 服务
+        if install_agent_service "$INSTALL_DIR"; then
+            SYSTEMD_INSTALLED=true
+        else
+            print_warning "systemd 服务安装失败，将使用传统方式启动"
+        fi
+    else
+        print_warning "未检测到 systemd"
+        
+        # 询问是否安装 systemd
+        if [ "$EUID" -eq 0 ]; then
+            echo ""
+            read -p "$(echo -e ${YELLOW}是否自动安装 systemd？${NC} [Y/n]): " install_systemd_choice
+            install_systemd_choice=${install_systemd_choice:-Y}
+            
+            if [ "$install_systemd_choice" = "Y" ] || [ "$install_systemd_choice" = "y" ]; then
+                if install_systemd; then
+                    SYSTEMD_INSTALLED=true
+                    # 安装成功后，安装 systemd 服务
+                    if install_agent_service "$INSTALL_DIR"; then
+                        print_success "systemd 服务已安装并配置"
+                    fi
+                else
+                    print_warning "systemd 安装失败，将使用传统方式启动"
+                fi
+            else
+                print_info "跳过 systemd 安装，将使用传统方式启动"
+            fi
+        else
+            print_info "需要 root 权限才能安装 systemd"
+            print_info "您可以稍后使用以下命令安装 systemd 服务："
+            echo -e "  ${CYAN}sudo $INSTALLED_BINARY install${NC}"
+        fi
+    fi
+
     # 自动启动 agent
     AUTO_STARTED=false
     if [ -n "$SERVER_URL" ] && [ -n "$AGENT_KEY" ]; then
         echo ""
         print_step "正在启动 agent..."
         
-        # 构建启动命令
-        START_CMD="./agent start"
-        if [ "$DAEMON_MODE" = true ]; then
-            START_CMD="$START_CMD --daemon"
-        fi
-        
-        # 执行启动命令
-        if run_as_cloudsentinel_agent "$START_CMD" "$INSTALL_DIR"; then
-            print_success "agent 已启动"
-            AUTO_STARTED=true
-            if [ "$DAEMON_MODE" = true ]; then
-                print_info "agent 正在后台运行（守护进程模式）"
+        # 如果 systemd 服务已安装，优先使用 systemd 启动
+        if [ "$SYSTEMD_INSTALLED" = true ] && [ "$EUID" -eq 0 ]; then
+            if systemctl start cloudsentinel-agent.service; then
+                print_success "agent 已通过 systemd 启动"
+                AUTO_STARTED=true
+                sleep 1
+                # 检查服务状态
+                if systemctl is-active --quiet cloudsentinel-agent.service; then
+                    print_success "agent 服务运行正常"
+                else
+                    print_warning "agent 服务可能未正常启动，请检查日志: systemctl status cloudsentinel-agent.service"
+                fi
+            else
+                print_warning "systemd 启动失败，尝试传统方式启动"
+                # 回退到传统启动方式
+                START_CMD="./agent start"
+                if [ "$DAEMON_MODE" = true ]; then
+                    START_CMD="$START_CMD --daemon"
+                fi
+                
+                if run_as_cloudsentinel_agent "$START_CMD" "$INSTALL_DIR"; then
+                    print_success "agent 已启动"
+                    AUTO_STARTED=true
+                    if [ "$DAEMON_MODE" = true ]; then
+                        print_info "agent 正在后台运行（守护进程模式）"
+                    fi
+                else
+                    print_warning "自动启动失败，请手动执行: cd $INSTALL_DIR && $START_CMD"
+                fi
             fi
         else
-            print_warning "自动启动失败，请手动执行: cd $INSTALL_DIR && $START_CMD"
+            # 传统启动方式
+            START_CMD="./agent start"
+            if [ "$DAEMON_MODE" = true ]; then
+                START_CMD="$START_CMD --daemon"
+            fi
+            
+            if run_as_cloudsentinel_agent "$START_CMD" "$INSTALL_DIR"; then
+                print_success "agent 已启动"
+                AUTO_STARTED=true
+                if [ "$DAEMON_MODE" = true ]; then
+                    print_info "agent 正在后台运行（守护进程模式）"
+                fi
+            else
+                print_warning "自动启动失败，请手动执行: cd $INSTALL_DIR && $START_CMD"
+            fi
         fi
     fi
 
@@ -714,12 +913,23 @@ main() {
     # 显示使用提示
     if [ "$AUTO_STARTED" = true ]; then
         echo -e "${BOLD}${GREEN}启动状态：${NC}"
-        if [ "$DAEMON_MODE" = true ]; then
+        if [ "$SYSTEMD_INSTALLED" = true ]; then
+            echo -e "  ${GREEN}✓${NC} agent 已通过 systemd 服务启动"
+        elif [ "$DAEMON_MODE" = true ]; then
             echo -e "  ${GREEN}✓${NC} agent 已使用守护进程模式启动"
         else
             echo -e "  ${GREEN}✓${NC} agent 已启动"
         fi
         echo ""
+        if [ "$SYSTEMD_INSTALLED" = true ]; then
+            echo -e "${BOLD}${GREEN}systemd 服务管理：${NC}"
+            echo -e "  启动服务: ${CYAN}sudo systemctl start cloudsentinel-agent${NC}"
+            echo -e "  停止服务: ${CYAN}sudo systemctl stop cloudsentinel-agent${NC}"
+            echo -e "  重启服务: ${CYAN}sudo systemctl restart cloudsentinel-agent${NC}"
+            echo -e "  查看状态: ${CYAN}sudo systemctl status cloudsentinel-agent${NC}"
+            echo -e "  查看日志: ${CYAN}sudo journalctl -u cloudsentinel-agent -f${NC}"
+            echo ""
+        fi
         if command -v cloudsentinel-agent &>/dev/null; then
             echo -e "${BOLD}${GREEN}使用提示：${NC}"
             echo -e "  你可以在任意位置使用 ${BOLD}cloudsentinel-agent${NC} 命令来管理 agent"
@@ -731,17 +941,37 @@ main() {
         echo -e "${BOLD}${YELLOW}配置提示：${NC}"
         echo -e "  配置参数不完整，请手动配置后启动 agent"
         echo ""
+        if [ "$SYSTEMD_INSTALLED" = true ]; then
+            echo -e "${BOLD}${GREEN}systemd 服务管理：${NC}"
+            echo -e "  启动服务: ${CYAN}sudo systemctl start cloudsentinel-agent${NC}"
+            echo -e "  查看状态: ${CYAN}sudo systemctl status cloudsentinel-agent${NC}"
+            echo ""
+        fi
         if command -v cloudsentinel-agent &>/dev/null; then
             echo -e "${BOLD}${GREEN}使用提示：${NC}"
             echo -e "  你可以在任意位置使用 ${BOLD}cloudsentinel-agent${NC} 命令来查看cli帮助"
-            echo -e "  配置完成后，执行 ${CYAN}cloudsentinel-agent start${NC} 来启动Agent"
+            if [ "$SYSTEMD_INSTALLED" = true ]; then
+                echo -e "  或使用 systemd: ${CYAN}sudo systemctl start cloudsentinel-agent${NC}"
+            else
+                echo -e "  配置完成后，执行 ${CYAN}cloudsentinel-agent start${NC} 来启动Agent"
+            fi
             echo ""
         fi
     else
+        if [ "$SYSTEMD_INSTALLED" = true ]; then
+            echo -e "${BOLD}${GREEN}systemd 服务管理：${NC}"
+            echo -e "  启动服务: ${CYAN}sudo systemctl start cloudsentinel-agent${NC}"
+            echo -e "  查看状态: ${CYAN}sudo systemctl status cloudsentinel-agent${NC}"
+            echo ""
+        fi
         if command -v cloudsentinel-agent &>/dev/null; then
             echo -e "${BOLD}${GREEN}使用提示：${NC}"
             echo -e "  你可以在任意位置使用 ${BOLD}cloudsentinel-agent${NC} 命令来查看cli帮助"
-            echo -e "  接下来，你需要执行 ${CYAN}cloudsentinel-agent start${NC} 来启动Agent"
+            if [ "$SYSTEMD_INSTALLED" = true ]; then
+                echo -e "  或使用 systemd: ${CYAN}sudo systemctl start cloudsentinel-agent${NC}"
+            else
+                echo -e "  接下来，你需要执行 ${CYAN}cloudsentinel-agent start${NC} 来启动Agent"
+            fi
             echo ""
         fi
     fi
