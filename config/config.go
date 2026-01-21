@@ -20,6 +20,7 @@ type Config struct {
 	DetailInterval    int    `json:"detail_interval"`              // 详细信息上报间隔（秒），默认30
 	SystemInterval    int    `json:"system_interval"`              // 系统信息上报间隔（秒），默认30
 	HeartbeatInterval int    `json:"heartbeat_interval"`           // 心跳间隔（秒），默认20
+	Timezone          string `json:"timezone,omitempty"`           // 时区设置，默认 Asia/Shanghai
 	AgentPrivateKey   string `json:"agent_private_key,omitempty"`  // Agent 私钥（PEM格式）
 	AgentPublicKey    string `json:"agent_public_key,omitempty"`   // Agent 公钥（PEM格式）
 	PanelPublicKey    string `json:"panel_public_key,omitempty"`   // 面板公钥（PEM格式）
@@ -65,6 +66,11 @@ func LoadConfigFromFile(configPath string) (Config, error) {
 	}
 	if cfg.HeartbeatInterval <= 0 {
 		cfg.HeartbeatInterval = 20 // 默认20秒
+	}
+
+	// 设置默认时区
+	if cfg.Timezone == "" {
+		cfg.Timezone = "Asia/Shanghai"
 	}
 
 	return cfg, nil
@@ -245,6 +251,11 @@ func LoadConfig() Config {
 			os.Exit(1)
 		}
 
+		// 设置默认时区
+		if cfg.Timezone == "" {
+			cfg.Timezone = "Asia/Shanghai"
+		}
+
 		// 保存配置到文件
 		if err := SaveConfig(cfg, configPath); err != nil {
 			fmt.Printf("保存配置时出错: %v\n", err)
@@ -270,6 +281,11 @@ func LoadConfig() Config {
 	}
 	if cfg.HeartbeatInterval <= 0 {
 		cfg.HeartbeatInterval = 20 // 默认20秒
+	}
+
+	// 设置默认时区
+	if cfg.Timezone == "" {
+		cfg.Timezone = "Asia/Shanghai"
 	}
 
 	return cfg

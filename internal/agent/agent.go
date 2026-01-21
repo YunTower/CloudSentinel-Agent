@@ -31,6 +31,23 @@ type Agent struct {
 
 // NewAgent 创建新的Agent实例
 func NewAgent(cfg config.Config) (*Agent, error) {
+	// 设置时区
+	timezone := cfg.Timezone
+	if timezone == "" {
+		timezone = "Asia/Shanghai" // 默认上海时区
+	}
+	location, err := time.LoadLocation(timezone)
+	if err != nil {
+		// 如果加载时区失败，尝试使用默认的上海时区
+		location, err = time.LoadLocation("Asia/Shanghai")
+		if err != nil {
+			// 如果还是失败，使用 UTC
+			location = time.UTC
+		}
+	}
+	// 设置全局时区
+	time.Local = location
+
 	// 初始化日志
 	logger := config.InitLogger(cfg.LogPath)
 
