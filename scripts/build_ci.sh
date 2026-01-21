@@ -34,28 +34,11 @@ echo "Agent directory: $SCRIPT_DIR"
 echo ""
 echo "Updating version in source files..."
 
-# 更新 cmd/cli/root.go 中的版本号
-if [ -f "cmd/cli/root.go" ]; then
-    if [[ "$OSTYPE" == "darwin"* ]]; then
-        # macOS
-        sed -i '' "s/Version: \".*\"/Version: \"$VERSION\"/" cmd/cli/root.go
-    else
-        # Linux
-        sed -i "s/Version: \".*\"/Version: \"$VERSION\"/" cmd/cli/root.go
-    fi
-    echo "Version updated in cmd/cli/root.go: $VERSION"
-fi
-
-# 更新 internal/collector/collector.go 中的版本号
-if [ -f "internal/collector/collector.go" ]; then
-    if [[ "$OSTYPE" == "darwin"* ]]; then
-        # macOS
-        sed -i '' "s/const agentVersion = \".*\"/const agentVersion = \"$VERSION-release\"/" internal/collector/collector.go
-    else
-        # Linux
-        sed -i "s/const agentVersion = \".*\"/const agentVersion = \"$VERSION-release\"/" internal/collector/collector.go
-    fi
-    echo "Version updated in internal/collector/collector.go: $VERSION-release"
+# 更新 internal/version/version.go 中的版本号
+if [ -f "internal/version/version.go" ]; then
+    # 更新 AgentVersion 变量
+    sed -i "s/var AgentVersion = \"[^\"]*\"/var AgentVersion = \"$VERSION\"/" internal/version/version.go
+    echo "Version updated in internal/version/version.go: $VERSION"
 fi
 
 # 设置构建环境变量
