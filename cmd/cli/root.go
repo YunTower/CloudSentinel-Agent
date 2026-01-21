@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"agent/internal/version"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -41,7 +42,7 @@ var rootCmd = &cobra.Command{
 	Use:     "agent",
 	Short:   "CloudSentinel Agent",
 	Long:    `CloudSentinel Agent - 云哨 (CloudSentinel) Agent端`,
-	Version: "0.0.1-beta.1",
+	Version: version.AgentVersion,
 }
 
 // Execute 执行根命令

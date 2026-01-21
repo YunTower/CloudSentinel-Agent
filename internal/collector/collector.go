@@ -3,6 +3,7 @@ package collector
 import (
 	"agent/internal/logger"
 	"agent/internal/system"
+	"agent/internal/version"
 	"agent/internal/websocket"
 	"context"
 	"runtime"
@@ -12,8 +13,6 @@ import (
 	"github.com/shirou/gopsutil/disk"
 	"github.com/shirou/gopsutil/net"
 )
-
-const agentVersion = "0.0.1-release"
 
 type Collector struct {
 	System *system.System
@@ -67,7 +66,7 @@ func (c *Collector) SendSystemInfo() error {
 	systemUptime := c.System.GetUptime()
 
 	systemData := map[string]interface{}{
-		"agent_version": agentVersion,
+		"agent_version": version.AgentVersion,
 		"system_name":   hostInfo.Platform,
 		"os":            hostInfo.OS,
 		"architecture":  runtime.GOARCH,
