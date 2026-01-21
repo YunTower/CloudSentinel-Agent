@@ -56,16 +56,16 @@ func LoadConfigFromFile(configPath string) (Config, error) {
 
 	// 设置默认上报间隔
 	if cfg.MetricsInterval <= 0 {
-		cfg.MetricsInterval = 30 // 默认30秒
+		cfg.MetricsInterval = 5
 	}
 	if cfg.DetailInterval <= 0 {
-		cfg.DetailInterval = 30 // 默认30秒
+		cfg.DetailInterval = 15
 	}
 	if cfg.SystemInterval <= 0 {
-		cfg.SystemInterval = 30 // 默认30秒
+		cfg.SystemInterval = 15
 	}
 	if cfg.HeartbeatInterval <= 0 {
-		cfg.HeartbeatInterval = 20 // 默认20秒
+		cfg.HeartbeatInterval = 10
 	}
 
 	// 设置默认时区
