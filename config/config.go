@@ -16,10 +16,10 @@ type Config struct {
 	Server            string `json:"server"`
 	Key               string `json:"key"`
 	LogPath           string `json:"log_path"`
-	MetricsInterval   int    `json:"metrics_interval"`             // 性能指标上报间隔（秒），默认30
-	DetailInterval    int    `json:"detail_interval"`              // 详细信息上报间隔（秒），默认30
-	SystemInterval    int    `json:"system_interval"`              // 系统信息上报间隔（秒），默认30
-	HeartbeatInterval int    `json:"heartbeat_interval"`           // 心跳间隔（秒），默认20
+	MetricsInterval   int    `json:"metrics_interval"`             // 性能指标上报间隔（秒）
+	DetailInterval    int    `json:"detail_interval"`              // 详细信息上报间隔（秒）
+	SystemInterval    int    `json:"system_interval"`              // 系统信息上报间隔（秒）
+	HeartbeatInterval int    `json:"heartbeat_interval"`           // 心跳间隔（秒）
 	Timezone          string `json:"timezone,omitempty"`           // 时区设置，默认 Asia/Shanghai
 	AgentPrivateKey   string `json:"agent_private_key,omitempty"`  // Agent 私钥（PEM格式）
 	AgentPublicKey    string `json:"agent_public_key,omitempty"`   // Agent 公钥（PEM格式）

@@ -224,6 +224,9 @@ func StartReporter(client *websocket.Client, logger *logger.Logger, cfg config.C
 		if statusExists && typeValue == "auth" && statusValue == "success" {
 			logger.Success("认证成功")
 
+			// 发送当前配置到面板
+			sendConfigToPanel(client, cfgPtr, logger)
+
 			// 通知主进程认证成功，启动数据上报和心跳
 			if callbacks.OnAuthSuccess != nil {
 				callbacks.OnAuthSuccess()
@@ -262,6 +265,91 @@ func StartReporter(client *websocket.Client, logger *logger.Logger, cfg config.C
 							// TODO: 退出程序，由系统服务管理器（如systemd）自动重启
 							logger.Info("退出程序，等待系统服务管理器重启...")
 							os.Exit(0)
+						} else if commandData == "update_config" {
+							// 处理配置更新命令
+							updateData, ok := jsonData["data"].(map[string]interface{})
+							if !ok {
+								logger.Error("配置更新命令数据格式错误")
+								response := websocket.Message{
+									Type: "command_response",
+									Data: map[string]interface{}{
+										"command": "update_config",
+										"status":  "error",
+										"message": "配置更新命令数据格式错误",
+									},
+								}
+								client.SendMessage(response)
+								continue
+							}
+
+							// 更新配置
+							configUpdated := false
+							if timezone, ok := updateData["timezone"].(string); ok && timezone != "" {
+								cfgPtr.Timezone = timezone
+								configUpdated = true
+							}
+							if metricsInterval, ok := updateData["metrics_interval"].(float64); ok && metricsInterval > 0 {
+								cfgPtr.MetricsInterval = int(metricsInterval)
+								configUpdated = true
+							}
+							if detailInterval, ok := updateData["detail_interval"].(float64); ok && detailInterval > 0 {
+								cfgPtr.DetailInterval = int(detailInterval)
+								configUpdated = true
+							}
+							if systemInterval, ok := updateData["system_interval"].(float64); ok && systemInterval > 0 {
+								cfgPtr.SystemInterval = int(systemInterval)
+								configUpdated = true
+							}
+							if heartbeatInterval, ok := updateData["heartbeat_interval"].(float64); ok && heartbeatInterval > 0 {
+								cfgPtr.HeartbeatInterval = int(heartbeatInterval)
+								configUpdated = true
+							}
+							if logPath, ok := updateData["log_path"].(string); ok && logPath != "" {
+								cfgPtr.LogPath = logPath
+								configUpdated = true
+							}
+
+							if configUpdated {
+								// 保存配置到文件
+								configPath := config.GetConfigPath()
+								if err := config.SaveConfig(*cfgPtr, configPath); err != nil {
+									logger.Error("保存配置失败: %v", err)
+									response := websocket.Message{
+										Type: "command_response",
+										Data: map[string]interface{}{
+											"command": "update_config",
+											"status":  "error",
+											"message": fmt.Sprintf("保存配置失败: %v", err),
+										},
+									}
+									client.SendMessage(response)
+									continue
+								}
+
+								logger.Info("配置已更新并保存")
+								response := websocket.Message{
+									Type: "command_response",
+									Data: map[string]interface{}{
+										"command": "update_config",
+										"status":  "success",
+										"message": "配置已更新",
+									},
+								}
+								if err := client.SendMessage(response); err != nil {
+									logger.Error("发送配置更新确认消息失败: %v", err)
+								}
+							} else {
+								logger.Warn("配置更新命令未包含有效配置项")
+								response := websocket.Message{
+									Type: "command_response",
+									Data: map[string]interface{}{
+										"command": "update_config",
+										"status":  "success",
+										"message": "未检测到配置变更",
+									},
+								}
+								client.SendMessage(response)
+							}
 						} else if commandData == "update" {
 							// 处理更新命令
 							updateData, ok := jsonData["data"].(map[string]interface{})
@@ -402,6 +490,27 @@ func handleKeyExchange(jsonData map[string]interface{}, client *websocket.Client
 	logger.Info("密钥交换成功，已接收面板公钥")
 
 	return nil
+}
+
+// sendConfigToPanel 发送当前配置到面板
+func sendConfigToPanel(client *websocket.Client, cfg *config.Config, logger *logger.Logger) {
+	configMessage := websocket.Message{
+		Type: "agent_config",
+		Data: map[string]interface{}{
+			"timezone":           cfg.Timezone,
+			"metrics_interval":   cfg.MetricsInterval,
+			"detail_interval":    cfg.DetailInterval,
+			"system_interval":   cfg.SystemInterval,
+			"heartbeat_interval": cfg.HeartbeatInterval,
+			"log_path":          cfg.LogPath,
+		},
+	}
+
+	if err := client.SendMessage(configMessage); err != nil {
+		logger.Error("发送配置到面板失败: %v", err)
+	} else {
+		logger.Info("已发送配置到面板")
+	}
 }
 
 // handleSessionKey 处理会话密钥消息
