@@ -25,40 +25,50 @@ func init() {
 }
 
 func runStop(cmd *cobra.Command, args []string) error {
-	// 如果systemd服务存在，优先使用systemd管理
+	// 优先检查systemd服务状态
 	if systemd.ServiceExists() {
-		active, _ := systemd.IsServiceActive()
-		if !active {
-			printStatus("stopped", "agent未运行")
+		active, err := systemd.IsServiceActive()
+		if err != nil {
+			// 检查systemd状态失败，继续尝试PID文件方式
+			printWarning(fmt.Sprintf("检查systemd服务状态失败: %v，尝试使用PID文件方式", err))
+		} else {
+			if !active {
+				printStatus("stopped", "agent未运行")
+				return nil
+			}
+
+			// 需要root权限操作systemd服务
+			if os.Geteuid() != 0 {
+				printWarning("需要root权限停止systemd服务")
+				printInfo("请使用以下命令之一：")
+				fmt.Println("  sudo ./agent stop")
+				fmt.Println("  sudo systemctl stop cloudsentinel-agent")
+				return fmt.Errorf("需要root权限")
+			}
+
+			// 使用systemd停止
+			if err := systemd.StopService(); err != nil {
+				printError(fmt.Sprintf("停止失败: %v", err))
+				printInfo("使用以下命令查看详细错误信息：")
+				fmt.Println("  sudo systemctl status cloudsentinel-agent")
+				fmt.Println("  sudo journalctl -u cloudsentinel-agent -n 50")
+				return err
+			}
+
+			printSuccess("agent已通过systemd服务停止")
 			return nil
 		}
-
-		// 需要root权限操作systemd服务
-		if os.Geteuid() != 0 {
-			printWarning("需要root权限停止systemd服务")
-			printInfo("请使用以下命令之一：")
-			fmt.Println("  sudo ./agent stop")
-			fmt.Println("  sudo systemctl stop cloudsentinel-agent")
-			return fmt.Errorf("需要root权限")
-		}
-
-		// 使用systemd停止
-		if err := systemd.StopService(); err != nil {
-			printError(fmt.Sprintf("停止失败: %v", err))
-			printInfo("使用以下命令查看详细错误信息：")
-			fmt.Println("  sudo systemctl status cloudsentinel-agent")
-			fmt.Println("  sudo journalctl -u cloudsentinel-agent -n 50")
-			return err
-		}
-
-		printSuccess("agent已通过systemd服务停止")
-		return nil
 	}
 
 	// 直接启动模式：读取PID
 	pid, running, err := daemon.CheckPIDFile(pidFile)
 	if err != nil {
-		return fmt.Errorf("检查PID文件失败: %w", err)
+		// PID文件检查失败，可能文件不存在或格式错误
+		// 如果systemd服务也不存在，说明agent确实未运行
+		printStatus("stopped", "agent未运行")
+		// 清理可能残留的PID文件
+		daemon.RemovePID(pidFile)
+		return nil
 	}
 
 	if !running {
