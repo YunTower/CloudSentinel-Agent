@@ -4,12 +4,16 @@ import (
 	"agent/config"
 	"agent/internal/crypto"
 	"agent/internal/logger"
+	"agent/internal/systemd"
 	"agent/internal/websocket"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
 	"time"
 )
 
@@ -98,6 +102,7 @@ func sendAuthMessage(client *websocket.Client, cfg *config.Config, logger *logge
 type ReporterCallbacks struct {
 	OnAuthSuccess func() // 认证成功时调用
 	OnDisconnect  func() // 断开连接时调用
+	OnReload      func() // 重载配置时调用
 }
 
 // StartReporter 启动消息处理循环，只负责消息读取和认证
@@ -262,8 +267,11 @@ func StartReporter(client *websocket.Client, logger *logger.Logger, cfg config.C
 							}
 							// 延迟一小段时间确保消息发送成功
 							time.Sleep(500 * time.Millisecond)
-							// TODO: 退出程序，由系统服务管理器（如systemd）自动重启
-							logger.Info("退出程序，等待系统服务管理器重启...")
+							// 执行重启
+							if err := restartAgent(logger); err != nil {
+								logger.Error("重启失败: %v", err)
+								os.Exit(1)
+							}
 							os.Exit(0)
 						} else if commandData == "update_config" {
 							// 处理配置更新命令
@@ -327,16 +335,56 @@ func StartReporter(client *websocket.Client, logger *logger.Logger, cfg config.C
 								}
 
 								logger.Info("配置已更新并保存")
-								response := websocket.Message{
-									Type: "command_response",
-									Data: map[string]interface{}{
-										"command": "update_config",
-										"status":  "success",
-										"message": "配置已更新",
-									},
+
+								// 检查是否需要重启（server或key变化需要重启）
+								needRestart := false
+								if server, ok := updateData["server"].(string); ok && server != "" && server != cfgPtr.Server {
+									needRestart = true
+									logger.Info("检测到服务器地址变化，需要重启")
 								}
-								if err := client.SendMessage(response); err != nil {
-									logger.Error("发送配置更新确认消息失败: %v", err)
+								if key, ok := updateData["key"].(string); ok && key != "" && key != cfgPtr.Key {
+									needRestart = true
+									logger.Info("检测到密钥变化，需要重启")
+								}
+
+								if needRestart {
+									// 需要重启，发送重启响应
+									response := websocket.Message{
+										Type: "command_response",
+										Data: map[string]interface{}{
+											"command": "update_config",
+											"status":  "success",
+											"message": "配置已更新，正在重启...",
+										},
+									}
+									if err := client.SendMessage(response); err != nil {
+										logger.Error("发送配置更新确认消息失败: %v", err)
+									}
+									// 延迟一小段时间确保消息发送成功
+									time.Sleep(500 * time.Millisecond)
+									// 执行重启
+									if err := restartAgent(logger); err != nil {
+										logger.Error("重启失败: %v", err)
+										os.Exit(1)
+									}
+									os.Exit(0)
+								} else {
+									// 不需要重启，调用重载回调
+									if callbacks.OnReload != nil {
+										callbacks.OnReload()
+									}
+
+									response := websocket.Message{
+										Type: "command_response",
+										Data: map[string]interface{}{
+											"command": "update_config",
+											"status":  "success",
+											"message": "配置已更新并重载",
+										},
+									}
+									if err := client.SendMessage(response); err != nil {
+										logger.Error("发送配置更新确认消息失败: %v", err)
+									}
 								}
 							} else {
 								logger.Warn("配置更新命令未包含有效配置项")
@@ -500,9 +548,9 @@ func sendConfigToPanel(client *websocket.Client, cfg *config.Config, logger *log
 			"timezone":           cfg.Timezone,
 			"metrics_interval":   cfg.MetricsInterval,
 			"detail_interval":    cfg.DetailInterval,
-			"system_interval":   cfg.SystemInterval,
+			"system_interval":    cfg.SystemInterval,
 			"heartbeat_interval": cfg.HeartbeatInterval,
-			"log_path":          cfg.LogPath,
+			"log_path":           cfg.LogPath,
 		},
 	}
 
@@ -554,6 +602,64 @@ func handleSessionKey(jsonData map[string]interface{}, client *websocket.Client,
 	}
 
 	logger.Success("会话密钥接收成功，加密通信已启用")
+
+	return nil
+}
+
+// restartAgent 重启agent程序
+func restartAgent(logger *logger.Logger) error {
+	// 检查是否有systemd服务
+	if systemd.ServiceExists() {
+		logger.Info("检测到systemd服务，使用systemd重启...")
+		// 使用systemd重启服务
+		if err := systemd.RestartService(); err != nil {
+			return fmt.Errorf("systemd重启失败: %w", err)
+		}
+		logger.Info("systemd重启命令已发送")
+		return nil
+	}
+
+	// 没有systemd服务，启动新进程后退出
+	logger.Info("未检测到systemd服务，启动新进程后退出...")
+
+	// 获取当前可执行文件路径
+	execPath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("获取可执行文件路径失败: %w", err)
+	}
+
+	// 获取当前进程的PID
+	pid := os.Getpid()
+
+	// 构建重启命令
+	var cmd *exec.Cmd
+	if runtime.GOOS == "windows" {
+		// Windows: 使用cmd延迟启动
+		cmd = exec.Command("cmd", "/C", "timeout", "/t", "2", "/nobreak", ">nul", "&", execPath)
+	} else {
+		// Linux/Unix: 使用sh延迟启动
+		cmd = exec.Command("sh", "-c", fmt.Sprintf("sleep 2 && %s &", execPath))
+	}
+
+	// 设置工作目录
+	cmd.Dir = filepath.Dir(execPath)
+
+	// 设置环境变量
+	cmd.Env = os.Environ()
+
+	// 启动新进程
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("启动新进程失败: %w", err)
+	}
+
+	logger.Info("新进程已启动，PID: %d，正在终止当前进程 PID: %d", cmd.Process.Pid, pid)
+
+	// 等待新进程启动
+	if runtime.GOOS == "windows" {
+		time.Sleep(3 * time.Second)
+	} else {
+		time.Sleep(2 * time.Second)
+	}
 
 	return nil
 }

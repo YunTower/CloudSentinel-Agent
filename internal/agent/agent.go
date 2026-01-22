@@ -113,6 +113,14 @@ func (a *Agent) Start() error {
 			a.pm.StopHeartbeat()
 			a.pm.StopReporter()
 		},
+		OnReload: func() {
+			a.logger.Info("收到配置重载请求，正在重载配置...")
+			if err := a.Reload(); err != nil {
+				a.logger.Error("配置重载失败: %v", err)
+			} else {
+				a.logger.Info("配置重载成功")
+			}
+		},
 	}
 
 	a.wg.Add(1)
