@@ -61,6 +61,16 @@ func RestartService() error {
 	return nil
 }
 
+// ReloadService 重载systemd服务配置
+func ReloadService() error {
+	cmd := exec.Command("systemctl", "reload", "cloudsentinel-agent.service")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("重载服务失败: %w, 输出: %s", err, string(output))
+	}
+	return nil
+}
+
 // GetServiceStatus 获取服务状态
 func GetServiceStatus() (string, error) {
 	cmd := exec.Command("systemctl", "is-active", "cloudsentinel-agent.service")

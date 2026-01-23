@@ -2,7 +2,6 @@ package cli
 
 import (
 	"fmt"
-	"os"
 
 	"agent/internal/daemon"
 	"agent/internal/systemd"
@@ -23,49 +22,51 @@ func init() {
 }
 
 func runStatus(cmd *cobra.Command, args []string) error {
-	// 检查systemd服务状态
+	// 优先检查systemd服务状态
 	if systemd.ServiceExists() {
 		status, err := systemd.GetServiceStatus()
 		if err == nil {
 			switch status {
 			case "active":
 				printStatus("running", "状态: 运行中")
-				os.Exit(0)
+				return nil
 			case "inactive":
 				printStatus("stopped", "状态: 已停止")
 				printInfo("使用 'sudo ./agent start' 启动服务")
 				printInfo("使用 './agent logs' 查看日志")
-				os.Exit(1)
+				return fmt.Errorf("agent未运行")
 			case "activating":
 				printStatus("starting", "状态: 正在启动")
-				os.Exit(0)
+				return nil
 			case "deactivating":
 				printStatus("stopping", "状态: 正在停止")
-				os.Exit(0)
+				return nil
 			case "failed":
 				printStatus("failed", "状态: 启动失败")
 				printWarning("使用 './agent logs' 查看错误日志")
-				os.Exit(1)
+				return fmt.Errorf("agent启动失败")
 			default:
 				printStatus(status, fmt.Sprintf("状态: %s", status))
-				os.Exit(1)
+				return fmt.Errorf("agent状态异常: %s", status)
 			}
 		}
+		// 如果获取systemd状态失败，继续检查PID文件
 	}
 
 	// 检查PID文件
 	pid, running, err := daemon.CheckPIDFile(pidFile)
 	if err != nil {
-		return fmt.Errorf("检查PID文件失败: %w", err)
+		// PID文件检查失败，可能文件不存在或格式错误
+		// 如果systemd服务也不存在，说明agent确实未运行
+		printStatus("stopped", "状态: 已停止")
+		return fmt.Errorf("agent未运行")
 	}
 
 	if running {
 		printStatus("running", fmt.Sprintf("状态: 运行中 (PID: %d)", pid))
-		os.Exit(0)
+		return nil
 	} else {
 		printStatus("stopped", "状态: 已停止")
-		os.Exit(1)
+		return fmt.Errorf("agent未运行")
 	}
-
-	return nil
 }

@@ -52,8 +52,9 @@ func runRestart(cmd *cobra.Command, args []string) error {
 
 	pid, running, err := daemon.CheckPIDFile(pidFile)
 	if err != nil {
-		// PID文件检查失败，继续尝试启动
+		// PID文件检查失败，可能是权限问题或其他错误
 		printWarning(fmt.Sprintf("检查PID文件失败: %v", err))
+		printInfo("将尝试启动agent，如果agent已在运行，启动命令会检测到并提示")
 	} else if running {
 		// 发送SIGTERM信号
 		if err := daemon.SendSignal(pid, syscall.SIGTERM); err != nil {
@@ -86,9 +87,15 @@ func runRestart(cmd *cobra.Command, args []string) error {
 				}
 			}
 		}
+	} else {
+		// PID文件存在但进程未运行，清理PID文件
+		if pid != 0 {
+			printInfo("检测到残留的PID文件，正在清理...")
+			daemon.RemovePID(pidFile)
+		}
 	}
 
-	// 再启动
+	// 再启动（runStart会检查是否已经在运行，避免重复启动）
 	startCmd := &cobra.Command{}
 	startCmd.SetArgs([]string{})
 	return runStart(startCmd, []string{})

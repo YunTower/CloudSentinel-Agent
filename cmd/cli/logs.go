@@ -5,6 +5,8 @@ import (
 	"os/exec"
 	"strconv"
 
+	"agent/internal/systemd"
+
 	"github.com/spf13/cobra"
 )
 
@@ -27,8 +29,7 @@ func init() {
 
 func runLogs(cmd *cobra.Command, args []string) error {
 	// 检查systemd服务是否存在
-	servicePath := "/etc/systemd/system/cloudsentinel-agent.service"
-	if _, err := os.Stat(servicePath); err == nil {
+	if systemd.ServiceExists() {
 		// 使用journalctl查看日志
 		journalArgs := []string{"-u", "cloudsentinel-agent.service"}
 		if followFlag {
