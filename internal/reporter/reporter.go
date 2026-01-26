@@ -4,7 +4,6 @@ import (
 	"agent/config"
 	"agent/internal/crypto"
 	"agent/internal/logger"
-	"agent/internal/systemd"
 	"agent/internal/websocket"
 	"encoding/base64"
 	"encoding/json"
@@ -608,25 +607,23 @@ func handleSessionKey(jsonData map[string]interface{}, client *websocket.Client,
 
 // restartAgent 重启agent程序
 func restartAgent(logger *logger.Logger) error {
-	// 检查是否有systemd服务
-	if systemd.ServiceExists() {
-		logger.Info("检测到systemd服务，使用systemd重启...")
-		// 使用systemd重启服务
-		if err := systemd.RestartService(); err != nil {
-			return fmt.Errorf("systemd重启失败: %w", err)
-		}
-		logger.Info("systemd重启命令已发送")
-		return nil
-	}
-
-	// 没有systemd服务，启动新进程后退出
-	logger.Info("未检测到systemd服务，启动新进程后退出...")
-
 	// 获取当前可执行文件路径
 	execPath, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("获取可执行文件路径失败: %w", err)
 	}
+
+	// 尝试调用 CLI 的 restart 命令 (这会尝试重启服务)
+	logger.Info("尝试通过 CLI 重启服务...")
+	// 在 Windows 下，exec.Command 可能需要 .exe 后缀，os.Executable 通常包含它
+	restartCmd := exec.Command(execPath, "restart")
+	if err := restartCmd.Run(); err == nil {
+		logger.Info("服务重启命令已发送")
+		return nil
+	}
+
+	// 如果失败，回退到进程重启模式
+	logger.Info("服务重启失败（可能未安装服务），切换到进程重启模式...")
 
 	// 获取当前进程的PID
 	pid := os.Getpid()
@@ -635,10 +632,12 @@ func restartAgent(logger *logger.Logger) error {
 	var cmd *exec.Cmd
 	if runtime.GOOS == "windows" {
 		// Windows: 使用cmd延迟启动
-		cmd = exec.Command("cmd", "/C", "timeout", "/t", "2", "/nobreak", ">nul", "&", execPath)
+		// 注意：添加 "run" 参数
+		cmd = exec.Command("cmd", "/C", "timeout", "/t", "2", "/nobreak", ">nul", "&", execPath, "run")
 	} else {
 		// Linux/Unix: 使用sh延迟启动
-		cmd = exec.Command("sh", "-c", fmt.Sprintf("sleep 2 && %s &", execPath))
+		// 注意：添加 "run" 参数
+		cmd = exec.Command("sh", "-c", fmt.Sprintf("sleep 2 && %s run &", execPath))
 	}
 
 	// 设置工作目录
