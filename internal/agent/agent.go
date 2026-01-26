@@ -49,7 +49,7 @@ func NewAgent(cfg config.Config) (*Agent, error) {
 	time.Local = location
 
 	// 初始化日志
-	logger := config.InitLogger(cfg.LogPath)
+	logger := config.InitLogger(cfg.LogPath, cfg.LogRetentionDays)
 
 	// 初始化系统信息
 	sys := config.InitSystem()

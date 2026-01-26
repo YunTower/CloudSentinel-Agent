@@ -27,6 +27,7 @@ type Config struct {
 	PanelFingerprint  string `json:"panel_fingerprint,omitempty"`  // 面板公钥指纹
 	SessionKey        string `json:"session_key,omitempty"`        // AES 会话密钥（Base64编码字符串）
 	EncryptionEnabled bool   `json:"encryption_enabled,omitempty"` // 是否启用加密
+	LogRetentionDays  int    `json:"log_retention_days"`           // 日志保留天数
 }
 
 // LoadConfigFromFile 从指定文件加载配置
@@ -71,6 +72,11 @@ func LoadConfigFromFile(configPath string) (Config, error) {
 	// 设置默认时区
 	if cfg.Timezone == "" {
 		cfg.Timezone = "Asia/Shanghai"
+	}
+
+	// 设置默认日志保留天数
+	if cfg.LogRetentionDays <= 0 {
+		cfg.LogRetentionDays = 7
 	}
 
 	return cfg, nil
@@ -157,6 +163,15 @@ func (c *Config) SetConfigValue(key, value string) error {
 			return fmt.Errorf("heartbeat_interval必须大于0")
 		}
 		c.HeartbeatInterval = val
+	case "log_retention_days":
+		val, err := strconv.Atoi(value)
+		if err != nil {
+			return fmt.Errorf("log_retention_days必须是整数: %w", err)
+		}
+		if val <= 0 {
+			return fmt.Errorf("log_retention_days必须大于0")
+		}
+		c.LogRetentionDays = val
 	default:
 		return fmt.Errorf("未知的配置项: %s", key)
 	}
@@ -180,6 +195,8 @@ func (c *Config) GetConfigValue(key string) (string, error) {
 		return fmt.Sprintf("%d", c.SystemInterval), nil
 	case "heartbeat_interval":
 		return fmt.Sprintf("%d", c.HeartbeatInterval), nil
+	case "log_retention_days":
+		return fmt.Sprintf("%d", c.LogRetentionDays), nil
 	default:
 		return "", fmt.Errorf("未知的配置项: %s", key)
 	}
@@ -291,8 +308,8 @@ func LoadConfig() Config {
 	return cfg
 }
 
-func InitLogger(logPath string) *logger.Logger {
-	logger, err := logger.NewLogger(logPath)
+func InitLogger(logPath string, retentionDays int) *logger.Logger {
+	logger, err := logger.NewLogger(logPath, retentionDays)
 	if err != nil {
 		fmt.Println("初始化日志时出错:", err)
 		os.Exit(1)
