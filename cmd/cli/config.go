@@ -19,7 +19,7 @@ var configCmd = &cobra.Command{
 var configSetCmd = &cobra.Command{
 	Use:   "set [key] [value]",
 	Short: "设置配置项",
-	Long:  `设置配置项的值。支持的key: server, key, log_path, metrics_interval, detail_interval, system_interval, heartbeat_interval`,
+	Long:  `设置配置项的值。支持的key: server, key, log_path, metrics_interval, detail_interval, system_interval, heartbeat_interval, log_retention_days`,
 	Args:  cobra.ExactArgs(2),
 	RunE:  runConfigSet,
 }
@@ -28,7 +28,7 @@ var configSetCmd = &cobra.Command{
 var configGetCmd = &cobra.Command{
 	Use:   "get [key]",
 	Short: "获取配置项",
-	Long:  `获取配置项的值。支持的key: server, key, log_path, metrics_interval, detail_interval, system_interval, heartbeat_interval`,
+	Long:  `获取配置项的值。支持的key: server, key, log_path, metrics_interval, detail_interval, system_interval, heartbeat_interval, log_retention_days`,
 	Args:  cobra.ExactArgs(1),
 	RunE:  runConfigGet,
 }
@@ -114,6 +114,7 @@ func getConfigDescription(key string) string {
 		"detail_interval":    "详细信息上报间隔（秒）",
 		"system_interval":    "系统信息上报间隔（秒）",
 		"heartbeat_interval": "心跳间隔（秒）",
+		"log_retention_days": "日志保留天数",
 	}
 	if desc, ok := descriptions[key]; ok {
 		return desc
@@ -150,6 +151,7 @@ func runConfigList(cmd *cobra.Command, args []string) error {
 	fmt.Printf("  %-20s = %-50d  # %s\n", "detail_interval", cfg.DetailInterval, getConfigDescription("detail_interval"))
 	fmt.Printf("  %-20s = %-50d  # %s\n", "system_interval", cfg.SystemInterval, getConfigDescription("system_interval"))
 	fmt.Printf("  %-20s = %-50d  # %s\n", "heartbeat_interval", cfg.HeartbeatInterval, getConfigDescription("heartbeat_interval"))
+	fmt.Printf("  %-20s = %-50d  # %s\n", "log_retention_days", cfg.LogRetentionDays, getConfigDescription("log_retention_days"))
 
 	fmt.Println()
 	printInfo("使用 './agent config set <key> <value>' 修改配置项")

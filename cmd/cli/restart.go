@@ -1,13 +1,8 @@
 package cli
 
 import (
+	"agent/internal/svc"
 	"fmt"
-	"os"
-	"syscall"
-	"time"
-
-	"agent/internal/daemon"
-	"agent/internal/systemd"
 
 	"github.com/spf13/cobra"
 )
@@ -15,88 +10,25 @@ import (
 // restartCmd 重启命令
 var restartCmd = &cobra.Command{
 	Use:   "restart",
-	Short: "重启agent",
-	Long:  `重启CloudSentinel Agent（先停止，再启动）。`,
+	Short: "重启服务",
+	Long:  `重启CloudSentinel Agent服务。`,
 	RunE:  runRestart,
 }
 
 func init() {
-	restartCmd.Flags().BoolVarP(&daemonFlag, "daemon", "d", false, "以守护进程模式运行")
 	rootCmd.AddCommand(restartCmd)
 }
 
 func runRestart(cmd *cobra.Command, args []string) error {
-	// 如果systemd服务存在，优先使用systemd管理
-	if systemd.ServiceExists() {
-		// 需要root权限操作systemd服务
-		if os.Geteuid() != 0 {
-			printWarning("需要root权限重启systemd服务")
-			printInfo("请使用以下命令之一：")
-			fmt.Println("  sudo ./agent restart")
-			fmt.Println("  sudo systemctl restart cloudsentinel-agent")
-			return fmt.Errorf("需要root权限")
-		}
-
-		// 使用systemd重启
-		if err := systemd.RestartService(); err != nil {
-			printError(fmt.Sprintf("重启失败: %v", err))
-			printInfo("使用以下命令查看详细错误信息：")
-			fmt.Println("  sudo systemctl status cloudsentinel-agent")
-			fmt.Println("  sudo journalctl -u cloudsentinel-agent -n 50")
-			return err
-		}
-
-		printSuccess("agent已通过systemd服务重启")
-		return nil
-	}
-
-	pid, running, err := daemon.CheckPIDFile(pidFile)
+	s, err := svc.New(configPath)
 	if err != nil {
-		// PID文件检查失败，可能是权限问题或其他错误
-		printWarning(fmt.Sprintf("检查PID文件失败: %v", err))
-		printInfo("将尝试启动agent，如果agent已在运行，启动命令会检测到并提示")
-	} else if running {
-		// 发送SIGTERM信号
-		if err := daemon.SendSignal(pid, syscall.SIGTERM); err != nil {
-			printWarning(fmt.Sprintf("发送停止信号失败: %v", err))
-		} else {
-			printInfo(fmt.Sprintf("已发送停止信号 (PID: %d)", pid))
-
-			// 快速等待进程退出（最多等待2秒，每次检查200ms）
-			maxWait := 2 * time.Second
-			checkInterval := 200 * time.Millisecond
-			elapsed := time.Duration(0)
-
-			for elapsed < maxWait {
-				if !daemon.IsProcessRunning(pid) {
-					printSuccess("agent已停止")
-					daemon.RemovePID(pidFile)
-					break
-				}
-				time.Sleep(checkInterval)
-				elapsed += checkInterval
-			}
-
-			// 如果还在运行，尝试强制终止
-			if daemon.IsProcessRunning(pid) {
-				if err := daemon.SendSignal(pid, syscall.SIGKILL); err != nil {
-					printWarning(fmt.Sprintf("强制终止失败: %v", err))
-				} else {
-					printWarning("agent已强制终止")
-					daemon.RemovePID(pidFile)
-				}
-			}
-		}
-	} else {
-		// PID文件存在但进程未运行，清理PID文件
-		if pid != 0 {
-			printInfo("检测到残留的PID文件，正在清理...")
-			daemon.RemovePID(pidFile)
-		}
+		return fmt.Errorf("初始化服务配置失败: %w", err)
 	}
 
-	// 再启动（runStart会检查是否已经在运行，避免重复启动）
-	startCmd := &cobra.Command{}
-	startCmd.SetArgs([]string{})
-	return runStart(startCmd, []string{})
+	if err := s.Restart(); err != nil {
+		return fmt.Errorf("重启服务失败: %w", err)
+	}
+
+	printSuccess("服务重启请求已发送")
+	return nil
 }
