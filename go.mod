@@ -1,9 +1,12 @@
 module agent
 
-go 1.21
+go 1.23.0
+
+toolchain go1.23.6
 
 require (
 	github.com/gorilla/websocket v1.5.3
+	github.com/kardianos/service v1.2.4
 	github.com/shirou/gopsutil v3.21.11+incompatible
 	github.com/spf13/cobra v1.10.1
 )
@@ -16,5 +19,5 @@ require (
 	github.com/tklauser/go-sysconf v0.3.14 // indirect
 	github.com/tklauser/numcpus v0.8.0 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
-	golang.org/x/sys v0.25.0 // indirect
+	golang.org/x/sys v0.34.0 // indirect
 )
