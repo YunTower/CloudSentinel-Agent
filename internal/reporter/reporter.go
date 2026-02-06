@@ -316,6 +316,17 @@ func StartReporter(client *websocket.Client, logger *logger.Logger, cfg config.C
 								configUpdated = true
 							}
 
+							if monitoredServices, ok := updateData["monitored_services"].([]interface{}); ok {
+								var services []string
+								for _, s := range monitoredServices {
+									if str, ok := s.(string); ok {
+										services = append(services, str)
+									}
+								}
+								cfgPtr.MonitoredServices = services
+								configUpdated = true
+							}
+
 							if configUpdated {
 								// 保存配置到文件
 								configPath := config.GetConfigPath()
@@ -550,6 +561,7 @@ func sendConfigToPanel(client *websocket.Client, cfg *config.Config, logger *log
 			"system_interval":    cfg.SystemInterval,
 			"heartbeat_interval": cfg.HeartbeatInterval,
 			"log_path":           cfg.LogPath,
+			"monitored_services": cfg.MonitoredServices,
 		},
 	}
 

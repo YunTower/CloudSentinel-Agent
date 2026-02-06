@@ -1,9 +1,7 @@
 package system
 
 import (
-	"agent/internal/logger"
-	"io"
-	"net/http"
+	"strings"
 	"time"
 
 	"github.com/shirou/gopsutil/cpu"
@@ -11,9 +9,19 @@ import (
 	"github.com/shirou/gopsutil/host"
 	"github.com/shirou/gopsutil/mem"
 	"github.com/shirou/gopsutil/net"
+	"github.com/shirou/gopsutil/process"
 )
 
 type System struct {
+}
+
+// ProcessStatus 进程状态
+type ProcessStatus struct {
+	Name    string  `json:"name"`
+	Running bool    `json:"running"`
+	Pids    []int32 `json:"pids"`
+	CPU     float64 `json:"cpu"`
+	Memory  float64 `json:"memory"`
 }
 
 // GetHostInfo 本机信息
@@ -97,90 +105,89 @@ func (s *System) GetCpuLogicCount() int {
 // GetCpuUsedPercent 3s内的cpu总使用率
 func (s *System) GetCpuUsedPercent() int {
 	percent, _ := cpu.Percent(3*time.Second, false)
-	return int(percent[0])
+	if len(percent) > 0 {
+		return int(percent[0])
+	}
+	return 0
 }
 
-// GetCpuUsedPercentEach 3s内每个cpu核心的使用率
-func (s *System) GetCpuUsedPercentEach() []float64 {
-	percent, _ := cpu.Percent(3*time.Second, true)
-	return percent
+// GetDiskInfo 磁盘信息
+func (s *System) GetDiskInfo() []disk.UsageStat {
+	parts, _ := disk.Partitions(true)
+	var disks []disk.UsageStat
+	for _, part := range parts {
+		u, _ := disk.Usage(part.Mountpoint)
+		disks = append(disks, *u)
+	}
+	return disks
 }
 
-// GetCpuInfo cpu信息
-func (s *System) GetCpuInfo() []cpu.InfoStat {
-	info, _ := cpu.Info()
-	return info
+// GetDiskIOCounters 磁盘IO信息
+func (s *System) GetDiskIOCounters() (map[string]disk.IOCountersStat, error) {
+	return disk.IOCounters()
 }
 
-// GetDiskPart 获取磁盘分区
+// GetDiskPart 获取磁盘分区信息
 func (s *System) GetDiskPart() []disk.PartitionStat {
-	part, _ := disk.Partitions(false)
-	return part
+	parts, _ := disk.Partitions(true)
+	return parts
 }
 
-// GetDiskAllPart 获取磁盘所有分区
-func (s *System) GetDiskAllPart() []disk.PartitionStat {
-	part, _ := disk.Partitions(true)
-	return part
-}
-
-// GetDiskIO 获取所有硬盘的IO信息
-func (s *System) GetDiskIO(path string) map[string]disk.IOCountersStat {
-	io, _ := disk.IOCounters(path)
-	return io
-}
-
-// GetDiskUsage 获取磁盘使用信息
-func (s *System) GetDiskUsage(path string) *disk.UsageStat {
-	usage, _ := disk.Usage(path)
+// GetDiskUsage 获取指定挂载点的磁盘使用情况
+func (s *System) GetDiskUsage(mountpoint string) *disk.UsageStat {
+	usage, err := disk.Usage(mountpoint)
+	if err != nil {
+		return nil
+	}
 	return usage
 }
 
-// GetNetIO 获取当前网络连接信息
-func (s *System) GetNetIO() []net.ConnectionStat {
-	netInfo, _ := net.Connections("all")
-	return netInfo
+// GetNetIOCounters 网络IO信息
+func (s *System) GetNetIOCounters() (map[string]net.IOCountersStat, error) {
+	return net.IOCounters(true)
 }
 
-// GetNetIOCounters 获取网络IO计数器（用于计算网络速度）
-func (s *System) GetNetIOCounters() (map[string]net.IOCountersStat, error) {
-	counters, err := net.IOCounters(true) // true表示获取所有网络接口
+// GetProcessStatus 获取指定服务的状态
+func (s *System) GetProcessStatus(services []string) ([]ProcessStatus, error) {
+	if len(services) == 0 {
+		return []ProcessStatus{}, nil
+	}
+
+	processes, err := process.Processes()
 	if err != nil {
 		return nil, err
 	}
 
-	result := make(map[string]net.IOCountersStat)
-	for _, counter := range counters {
-		result[counter.Name] = counter
+	statusMap := make(map[string]*ProcessStatus)
+	for _, name := range services {
+		statusMap[name] = &ProcessStatus{Name: name, Running: false, Pids: []int32{}}
+	}
+
+	for _, p := range processes {
+		name, err := p.Name()
+		if err != nil {
+			continue
+		}
+
+		// 简单的名称匹配，可能需要更复杂的逻辑（如匹配命令行参数）
+		for _, serviceName := range services {
+			if strings.Contains(strings.ToLower(name), strings.ToLower(serviceName)) {
+				s := statusMap[serviceName]
+				s.Running = true
+				s.Pids = append(s.Pids, p.Pid)
+
+				cpuPercent, _ := p.CPUPercent()
+				s.CPU += cpuPercent
+
+				memPercent, _ := p.MemoryPercent()
+				s.Memory += float64(memPercent)
+			}
+		}
+	}
+
+	var result []ProcessStatus
+	for _, name := range services {
+		result = append(result, *statusMap[name])
 	}
 	return result, nil
-}
-
-// GetIpv4 获取本机ipv4地址
-func (s *System) GetIpv4(log *logger.Logger) string {
-	urls := []string{
-		"https://api.ipify.org",
-		"https://4.ipw.cn",
-	}
-
-	log.Info("获取本机IPv4...")
-	for _, url := range urls {
-		resp, err := http.Get(url)
-		if err != nil {
-			log.Warn("获取IPv4失败，切换接口（url: %s error: %v）", url, err)
-			continue
-		}
-		defer resp.Body.Close()
-
-		ip, err := io.ReadAll(resp.Body)
-		if err != nil {
-			log.Error("获取 %s 响应失败: %v\n", url, err)
-			continue
-		}
-
-		return string(ip)
-	}
-
-	log.Error("无法获取服务器IPv4地址")
-	return ""
 }
