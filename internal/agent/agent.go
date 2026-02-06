@@ -58,8 +58,15 @@ func NewAgent(cfg config.Config) (*Agent, error) {
 	client := websocket.NewClient(cfg.Server, logger)
 
 	// 创建数据收集器
-	col := collector.NewCollector(sys, logger, client,
-		cfg.MetricsInterval, cfg.DetailInterval, cfg.SystemInterval)
+	col := collector.NewCollector(sys, logger, client, cfg)
+
+	// 设置日志处理器
+	logger.SetHandler(func(level, message string) {
+		// 发送日志到服务器
+		// 注意：这里需要避免死锁，不能直接调用 client.SendMessage，因为 client 内部也可能打日志
+		// 最好使用一个 buffer 或者 channel
+		col.SendLog(level, message)
+	})
 
 	// 创建进程管理器
 	pm := process.NewProcessManager(logger)
@@ -209,16 +216,8 @@ func (a *Agent) Reload() error {
 	a.cfg = newCfg
 	a.mu.Unlock()
 
-	// 如果间隔参数有变化，更新收集器和进程管理器
-	if oldCfg.MetricsInterval != newCfg.MetricsInterval ||
-		oldCfg.DetailInterval != newCfg.DetailInterval ||
-		oldCfg.SystemInterval != newCfg.SystemInterval {
-		a.collector.UpdateIntervals(
-			newCfg.MetricsInterval,
-			newCfg.DetailInterval,
-			newCfg.SystemInterval,
-		)
-	}
+	// 如果配置有变化，更新收集器
+	a.collector.UpdateConfig(newCfg)
 
 	if oldCfg.HeartbeatInterval != newCfg.HeartbeatInterval {
 		a.pm.SetHeartbeatInterval(time.Duration(newCfg.HeartbeatInterval) * time.Second)

@@ -1,6 +1,7 @@
 package collector
 
 import (
+	"agent/config"
 	"agent/internal/logger"
 	"agent/internal/system"
 	"agent/internal/version"
@@ -18,6 +19,7 @@ type Collector struct {
 	System *system.System
 	Logger *logger.Logger
 	Client *websocket.Client
+	Config config.Config
 
 	// 上报间隔配置
 	MetricsInterval int // 性能指标上报间隔（秒）
@@ -33,17 +35,73 @@ type Collector struct {
 	lastDiskIOCounters map[string]disk.IOCountersStat
 	lastDiskIOTime     time.Time
 	diskIOMutex        sync.RWMutex
+
+	// 日志发送相关
+	logChan chan map[string]interface{}
 }
 
-func NewCollector(sys *system.System, log *logger.Logger, client *websocket.Client, metricsInterval, detailInterval, systemInterval int) *Collector {
-	return &Collector{
+func NewCollector(sys *system.System, log *logger.Logger, client *websocket.Client, cfg config.Config) *Collector {
+	c := &Collector{
 		System:          sys,
 		Logger:          log,
 		Client:          client,
-		MetricsInterval: metricsInterval,
-		DetailInterval:  detailInterval,
-		SystemInterval:  systemInterval,
+		MetricsInterval: cfg.MetricsInterval,
+		DetailInterval:  cfg.DetailInterval,
+		SystemInterval:  cfg.SystemInterval,
+		Config:          cfg,
+		logChan:         make(chan map[string]interface{}, 100),
 	}
+
+	// 启动日志发送协程
+	go c.processLogs()
+
+	return c
+}
+
+// SendLog 发送日志
+func (c *Collector) SendLog(level, message string) {
+	select {
+	case c.logChan <- map[string]interface{}{
+		"level":   level,
+		"message": message,
+		"time":    time.Now().Format(time.RFC3339),
+	}:
+	default:
+		// 通道满时丢弃日志，防止阻塞
+	}
+}
+
+// processLogs 处理日志发送
+func (c *Collector) processLogs() {
+	buffer := make([]interface{}, 0, 10)
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case log := <-c.logChan:
+			buffer = append(buffer, log)
+			if len(buffer) >= 10 {
+				c.flushLogs(buffer)
+				buffer = make([]interface{}, 0, 10)
+			}
+		case <-ticker.C:
+			if len(buffer) > 0 {
+				c.flushLogs(buffer)
+				buffer = make([]interface{}, 0, 10)
+			}
+		}
+	}
+}
+
+// flushLogs 发送日志缓冲区
+func (c *Collector) flushLogs(logs []interface{}) {
+	message := websocket.Message{
+		Type: "agent_log",
+		Data: logs,
+	}
+	// 忽略错误，避免循环日志
+	_ = c.Client.SendMessage(message)
 }
 
 // SendSystemInfo 发送系统基础信息
@@ -201,8 +259,13 @@ func (c *Collector) getDiskUsage() float64 {
 	seenDevices := make(map[string]bool) // 用于去重相同设备
 
 	for _, partition := range partitions {
-		// 跳过虚拟文件系统
+		// 跳过虚拟文件系统（基于挂载点）
 		if c.isVirtualFilesystem(partition.Mountpoint) {
+			continue
+		}
+
+		// 跳过排除的文件系统类型
+		if c.isExcludedFilesystem(partition.Fstype) {
 			continue
 		}
 
@@ -316,25 +379,25 @@ func (c *Collector) SendMemoryInfo() error {
 	return c.Client.SendMessage(message)
 }
 
-// isVirtualFilesystem 判断是否为虚拟文件系统
+// isVirtualFilesystem 判断是否为虚拟文件系统（基于挂载点）
 func (c *Collector) isVirtualFilesystem(mountPoint string) bool {
-	// 常见的虚拟文件系统挂载点前缀
-	virtualMountPrefixes := []string{
-		"/proc",
-		"/sys",
-		"/dev",
-		"/run",
-		"/var/run",
-		"/snap",
-	}
-
-	// 检查是否以虚拟文件系统路径开头
-	for _, prefix := range virtualMountPrefixes {
+	// 使用配置中的排除挂载点列表
+	for _, prefix := range c.Config.ExcludedMountPoints {
 		if mountPoint == prefix || (len(mountPoint) > len(prefix) && mountPoint[:len(prefix)+1] == prefix+"/") {
 			return true
 		}
 	}
 
+	return false
+}
+
+// isExcludedFilesystem 判断文件系统类型是否应该被排除
+func (c *Collector) isExcludedFilesystem(fstype string) bool {
+	for _, excludedType := range c.Config.ExcludedFilesystems {
+		if fstype == excludedType {
+			return true
+		}
+	}
 	return false
 }
 
@@ -346,8 +409,13 @@ func (c *Collector) SendDiskInfo() error {
 	seenDevices := make(map[string]bool) // 用于去重相同设备
 
 	for _, partition := range partitions {
-		// 跳过虚拟文件系统
+		// 跳过虚拟文件系统（基于挂载点）
 		if c.isVirtualFilesystem(partition.Mountpoint) {
+			continue
+		}
+
+		// 跳过排除的文件系统类型
+		if c.isExcludedFilesystem(partition.Fstype) {
 			continue
 		}
 
@@ -472,6 +540,65 @@ func (c *Collector) SendVirtualMemory() error {
 	return c.Client.SendMessage(message)
 }
 
+// SendProcessInfo 发送进程信息
+func (c *Collector) SendProcessInfo() error {
+	// 检查配置中是否有 monitored_services
+	if len(c.Config.MonitoredServices) == 0 {
+		return nil
+	}
+
+	processStatus, err := c.System.GetProcessStatus(c.Config.MonitoredServices)
+	if err != nil {
+		c.Logger.Warn("获取进程状态失败: %v", err)
+		return err
+	}
+
+	// 构造数据包
+	data := make(map[string]interface{})
+	for _, ps := range processStatus {
+		data[ps.Name] = map[string]interface{}{
+			"running": ps.Running,
+			"pids":    ps.Pids,
+			"cpu":     ps.CPU,
+			"memory":  ps.Memory,
+		}
+	}
+
+	message := websocket.Message{
+		Type: "process_info",
+		Data: data,
+	}
+
+	return c.Client.SendMessage(message)
+}
+
+// SendGPUInfo 发送GPU信息
+func (c *Collector) SendGPUInfo() error {
+	gpuStats, err := c.System.GetGPUInfo()
+	if err != nil {
+		c.Logger.Warn("获取GPU信息失败: %v", err)
+		return err
+	}
+
+	// 如果GPU不可用，静默跳过（不报错）
+	if !gpuStats.Available {
+		return nil
+	}
+
+	// 构造数据包
+	data := map[string]interface{}{
+		"available": gpuStats.Available,
+		"gpus":      gpuStats.GPUs,
+	}
+
+	message := websocket.Message{
+		Type: "gpu_info",
+		Data: data,
+	}
+
+	return c.Client.SendMessage(message)
+}
+
 // StartPeriodicReporting 启动周期性上报，使用 context 控制生命周期
 func (c *Collector) StartPeriodicReporting(ctx context.Context, healthChan chan<- bool) {
 	// 立即发送一次系统信息
@@ -496,111 +623,70 @@ func (c *Collector) StartPeriodicReporting(ctx context.Context, healthChan chan<
 	c.Logger.Info("数据上报间隔配置: 性能指标=%d秒, 详细信息=%d秒, 系统信息=%d秒",
 		c.MetricsInterval, c.DetailInterval, c.SystemInterval)
 
-	// 确保所有 ticker 在退出时停止
 	defer func() {
 		metricsTicker.Stop()
 		detailTicker.Stop()
 		systemTicker.Stop()
-		c.Logger.Info("数据上报进程：已停止")
 	}()
-
-	c.Logger.Success("数据上报进程：已启动")
 
 	for {
 		select {
-		case <-metricsTicker.C:
-			// 每30秒发送一次性能指标
-			if !c.Client.IsConnected {
-				c.Logger.Warn("未连接，跳过性能指标上报")
-				select {
-				case healthChan <- false:
-				default:
-				}
-				continue
-			}
-			if err := c.SendMetrics(); err != nil {
-				c.Logger.Error("发送性能指标失败: %v", err)
-				select {
-				case healthChan <- false:
-				default:
-				}
-			} else {
-				select {
-				case healthChan <- true:
-				default:
-				}
-			}
-
-		case <-detailTicker.C:
-			// 每60秒发送一次详细信息
-			if !c.Client.IsConnected {
-				c.Logger.Warn("未连接，跳过详细信息上报")
-				select {
-				case healthChan <- false:
-				default:
-				}
-				continue
-			}
-			hasError := false
-			if err := c.SendMemoryInfo(); err != nil {
-				c.Logger.Error("发送内存信息失败: %v", err)
-				hasError = true
-			}
-			if err := c.SendDiskInfo(); err != nil {
-				c.Logger.Error("发送磁盘信息失败: %v", err)
-				hasError = true
-			}
-			if err := c.SendDiskIO(); err != nil {
-				c.Logger.Error("发送磁盘IO失败: %v", err)
-				hasError = true
-			}
-			if err := c.SendNetworkInfo(); err != nil {
-				c.Logger.Error("发送网络信息失败: %v", err)
-				hasError = true
-			}
-			if err := c.SendVirtualMemory(); err != nil {
-				c.Logger.Error("发送虚拟内存信息失败: %v", err)
-				hasError = true
-			}
-			select {
-			case healthChan <- !hasError:
-			default:
-			}
-
-		case <-systemTicker.C:
-			// 每5分钟重新发送一次系统信息
-			if !c.Client.IsConnected {
-				c.Logger.Warn("未连接，跳过系统信息上报")
-				select {
-				case healthChan <- false:
-				default:
-				}
-				continue
-			}
-			if err := c.SendSystemInfo(); err != nil {
-				c.Logger.Error("发送系统信息失败: %v", err)
-				select {
-				case healthChan <- false:
-				default:
-				}
-			} else {
-				select {
-				case healthChan <- true:
-				default:
-				}
-			}
-
 		case <-ctx.Done():
+			c.Logger.Info("停止数据采集")
 			return
+		case <-metricsTicker.C:
+			// 并发发送性能指标
+			go func() {
+				if err := c.SendMetrics(); err != nil {
+					c.Logger.Warn("发送性能指标失败: %v", err)
+				}
+				// 发送进程信息（与性能指标同频率）
+				if err := c.SendProcessInfo(); err != nil {
+					c.Logger.Warn("发送进程信息失败: %v", err)
+				}
+			}()
+		case <-detailTicker.C:
+			// 并发发送详细信息
+			go func() {
+				if err := c.SendCPUInfo(); err != nil {
+					c.Logger.Warn("发送CPU详细信息失败: %v", err)
+				}
+				if err := c.SendMemoryInfo(); err != nil {
+					c.Logger.Warn("发送内存详细信息失败: %v", err)
+				}
+				if err := c.SendDiskInfo(); err != nil {
+					c.Logger.Warn("发送磁盘详细信息失败: %v", err)
+				}
+				if err := c.SendDiskIO(); err != nil {
+					c.Logger.Warn("发送磁盘IO信息失败: %v", err)
+				}
+				if err := c.SendNetworkInfo(); err != nil {
+					c.Logger.Warn("发送网络详细信息失败: %v", err)
+				}
+				if err := c.SendVirtualMemory(); err != nil {
+					c.Logger.Warn("发送Swap信息失败: %v", err)
+				}
+				if err := c.SendGPUInfo(); err != nil {
+					c.Logger.Warn("发送GPU信息失败: %v", err)
+				}
+			}()
+		case <-systemTicker.C:
+			// 发送系统信息
+			go func() {
+				if err := c.SendSystemInfo(); err != nil {
+					c.Logger.Warn("发送系统信息失败: %v", err)
+				}
+			}()
 		}
 	}
 }
 
-// UpdateIntervals 更新上报间隔配置（用于配置重载）
-func (c *Collector) UpdateIntervals(metricsInterval, detailInterval, systemInterval int) {
-	c.MetricsInterval = metricsInterval
-	c.DetailInterval = detailInterval
-	c.SystemInterval = systemInterval
-	c.Logger.Info("配置已更新: 性能指标=%d秒, 详细信息=%d秒, 系统信息=%d秒",
-		c.MetricsInterval, c.DetailInterval, c.SystemInterval)
+// UpdateConfig 更新配置（用于配置重载）
+func (c *Collector) UpdateConfig(cfg config.Config) {
+	c.Config = cfg
+	c.MetricsInterval = cfg.MetricsInterval
+	c.DetailInterval = cfg.DetailInterval
+	c.SystemInterval = cfg.SystemInterval
+	c.Logger.Info("配置已更新: 性能指标=%d秒, 详细信息=%d秒, 系统信息=%d秒, 监控服务数=%d",
+		c.MetricsInterval, c.DetailInterval, c.SystemInterval, len(cfg.MonitoredServices))
 }

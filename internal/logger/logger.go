@@ -25,7 +25,11 @@ type Logger struct {
 	file          *os.File
 	currentDate   string
 	retentionDays int
+	handler       LogHandler
 }
+
+// LogHandler 日志处理函数类型
+type LogHandler func(level, message string)
 
 func NewLogger(logDir string, retentionDays int) (*Logger, error) {
 	if err := os.MkdirAll(logDir, os.ModePerm); err != nil {
@@ -174,6 +178,13 @@ func (l *Logger) Success(format string, v ...interface{}) {
 	l.log(Green, "SUCCESS", format, v...)
 }
 
+// SetHandler 设置日志处理函数
+func (l *Logger) SetHandler(h LogHandler) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.handler = h
+}
+
 func (l *Logger) log(color, level, format string, v ...interface{}) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -186,4 +197,10 @@ func (l *Logger) log(color, level, format string, v ...interface{}) {
 	msg := fmt.Sprintf(format, v...)
 	l.fileLogger.Printf("[%s] %s", level, msg)
 	l.console.Printf("%s[%s] %s%s", color, level, msg, Reset)
+
+	if l.handler != nil {
+		// 异步调用 handler，避免阻塞日志记录
+		// 注意：如果 handler 写入太慢，可能会导致 goroutine 堆积
+		go l.handler(level, msg)
+	}
 }
