@@ -111,6 +111,18 @@ func (s *System) GetCpuUsedPercent() int {
 	return 0
 }
 
+// GetCpuUsedPercentEach 获取每个CPU核心的使用率
+func (s *System) GetCpuUsedPercentEach() []float64 {
+	percents, _ := cpu.Percent(3*time.Second, true)
+	return percents
+}
+
+// GetCpuInfo 获取CPU信息
+func (s *System) GetCpuInfo() []cpu.InfoStat {
+	info, _ := cpu.Info()
+	return info
+}
+
 // GetDiskInfo 磁盘信息
 func (s *System) GetDiskInfo() []disk.UsageStat {
 	parts, _ := disk.Partitions(true)
@@ -144,7 +156,24 @@ func (s *System) GetDiskUsage(mountpoint string) *disk.UsageStat {
 
 // GetNetIOCounters 网络IO信息
 func (s *System) GetNetIOCounters() (map[string]net.IOCountersStat, error) {
-	return net.IOCounters(true)
+	counters, err := net.IOCounters(true)
+	if err != nil {
+		return nil, err
+	}
+
+	// 将slice转换为map
+	result := make(map[string]net.IOCountersStat)
+	for _, counter := range counters {
+		result[counter.Name] = counter
+	}
+
+	return result, nil
+}
+
+// GetNetIO 获取网络连接信息
+func (s *System) GetNetIO() []net.ConnectionStat {
+	conns, _ := net.Connections("all")
+	return conns
 }
 
 // GetProcessStatus 获取指定服务的状态
