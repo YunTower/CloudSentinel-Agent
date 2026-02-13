@@ -91,29 +91,25 @@ jobs:
               echo "- ${hash_link} ${linked_message}"
             done)
           fi
-          
-          echo "agent_commits<<EOF" >> $GITHUB_OUTPUT
-          echo "$COMMITS" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+          # 写入文件，避免 GITHUB_OUTPUT 多行导致 release body 丢失（官方文档：任意内容应写文件）
+          echo "$COMMITS" > "$GITHUB_WORKSPACE/agent_changelog.txt"
 
       - name: Prepare release notes
-        id: release_notes
         run: |
           TAG_NAME="${{ steps.tag.outputs.tag_name }}"
-          AGENT_COMMITS="${{ steps.agent_changelog.outputs.agent_commits }}"
-          
-          echo "release_notes<<EOF" >> $GITHUB_OUTPUT
-          echo "# 🎉 $TAG_NAME" >> $GITHUB_OUTPUT
-          echo "Agent Changes：" >> $GITHUB_OUTPUT
-          echo "$AGENT_COMMITS" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+          {
+            echo "# 🎉 $TAG_NAME"
+            echo ""
+            echo "## Agent Changes"
+            cat "$GITHUB_WORKSPACE/agent_changelog.txt"
+          } > "$GITHUB_WORKSPACE/release_notes.md"
 
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ steps.tag.outputs.tag_name }}
           name: Release ${{ steps.tag.outputs.tag_name }}
-          body: ${{ steps.release_notes.outputs.release_notes }}
+          body_path: ${{ github.workspace }}/release_notes.md
           files: |
             agent-linux-amd64.tar.gz
             agent-linux-amd64.sha256
