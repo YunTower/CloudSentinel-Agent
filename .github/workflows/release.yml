@@ -73,40 +73,24 @@ jobs:
           done
           
           if [ -z "$PREV_TAG" ]; then
-            # 如果没有上一个 tag，获取所有提交
             echo "No previous tag found, getting all commits"
-            # 格式：完整hash|短hash|commit message
-            RAW_COMMITS=$(git log --pretty=format:"%H|%h|%s" --reverse)
+            RAW_COMMITS=$(git log --pretty=format:"%H%x09%h%x09%s" --reverse)
           else
-            # 获取两个 tag 之间的提交
             echo "Previous tag: $PREV_TAG"
-            # 格式：完整hash|短hash|commit message（使用 --reverse 保持时间顺序）
-            RAW_COMMITS=$(git log ${PREV_TAG}..${TAG_NAME} --pretty=format:"%H|%h|%s" --reverse)
+            RAW_COMMITS=$(git log ${PREV_TAG}..${TAG_NAME} --pretty=format:"%H%x09%h%x09%s" --reverse)
           fi
           
-          # 如果没有提交，设置默认值
           if [ -z "$RAW_COMMITS" ]; then
             COMMITS="- 无变更"
           else
-            # 处理每个提交，将 hash 和 PR 编号转换为链接
-            COMMITS=$(echo "$RAW_COMMITS" | while IFS='|' read -r full_hash short_hash message; do
-              # 跳过空行
+            # 格式：- [hash](url) message（message 为 commit subject 第一行）
+            COMMITS=$(echo "$RAW_COMMITS" | while IFS=$'\t' read -r full_hash short_hash message; do
               [ -z "$full_hash" ] && continue
-              
-              # 将 hash 转换为链接
               hash_link="[${short_hash}](${REPO_URL}/commit/${full_hash})"
-              # 将 PR 编号转换为链接（匹配 #数字 格式）
               linked_message=$(echo "$message" | sed -E "s/#([0-9]+)/[#\1](${REPO_URL}\/pull\/\1)/g")
-              # 输出格式：hash + commit message（确保两者都显示）
               echo "- ${hash_link} ${linked_message}"
             done)
           fi
-          
-          # 调试输出，确认内容包含 hash 和 commit message
-          echo "=== Generated Changelog (包含 hash 和 commit message) ==="
-          echo "$COMMITS"
-          echo "==========================="
-
           
           echo "agent_commits<<EOF" >> $GITHUB_OUTPUT
           echo "$COMMITS" >> $GITHUB_OUTPUT
