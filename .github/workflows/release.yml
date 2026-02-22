@@ -50,70 +50,53 @@ jobs:
           chmod +x scripts/build_ci.sh
           ./scripts/build_ci.sh "${{ steps.tag.outputs.version }}" linux arm64
 
-      - name: Get agent changelog
-        id: agent_changelog
+      # ==========================
+      # Agent Changelog
+      # ==========================
+      - name: Generate agent changelog
         run: |
-          TAG_NAME="${{ steps.tag.outputs.tag_name }}"
-          REPO_URL="https://github.com/${{ github.repository }}"
-          cd ${{ github.workspace }}
-          
-          # 获取所有 tags（使用 --force 避免标签冲突）
+          TAG=${{ steps.tag.outputs.tag_name }}
           git fetch --tags --force
-          
-          # 获取所有 tag 列表，按版本排序
-          ALL_TAGS=$(git tag -l "v*" | sort -V)
-          
-          # 查找当前 tag 的上一个 tag
-          PREV_TAG=""
-          for tag in $ALL_TAGS; do
-            if [ "$tag" = "$TAG_NAME" ]; then
-              break
-            fi
-            PREV_TAG=$tag
-          done
-          
-          DELIM=":::CL:::"
-          if [ -z "$PREV_TAG" ]; then
-            echo "No previous tag found, getting all commits"
-            RAW_COMMITS=$(git log --pretty=format:"%H${DELIM}%h${DELIM}%s" --reverse)
-          else
-            echo "Previous tag: $PREV_TAG"
-            RAW_COMMITS=$(git log ${PREV_TAG}..${TAG_NAME} --pretty=format:"%H${DELIM}%h${DELIM}%s" --reverse)
-          fi
-          
-          if [ -z "$RAW_COMMITS" ]; then
-            COMMITS="- 无变更"
-          else
-            COMMITS=$(echo "$RAW_COMMITS" | while IFS= read -r line; do
-              [ -z "$line" ] && continue
-              full_hash="${line%%${DELIM}*}"
-              rest="${line#*${DELIM}}"
-              short_hash="${rest%%${DELIM}*}"
-              message="${rest#*${DELIM}}"
-              [ -z "$full_hash" ] && continue
-              hash_link="[${short_hash}](${REPO_URL}/commit/${full_hash})"
-              linked_message=$(echo "$message" | sed -E "s/#([0-9]+)/[#\1](${REPO_URL}\/pull\/\1)/g")
-              echo "- ${hash_link} ${linked_message}"
-            done)
-          fi
-          echo "$COMMITS" > "$GITHUB_WORKSPACE/agent_changelog.txt"
 
+          PREV=$(git tag --sort=-v:refname | grep -A1 "^$TAG$" | tail -n1)
+
+          if [ -z "$PREV" ]; then
+            RANGE="$TAG"
+          else
+            RANGE="$PREV..$TAG"
+          fi
+
+          git log $RANGE \
+            --pretty=format:"- [%h](https://github.com/${{ github.repository }}/commit/%H) %s" \
+            --reverse > agent_changelog.txt
+
+          if [ ! -s agent_changelog.txt ]; then
+            echo "- 无变更" > agent_changelog.txt
+          fi
+
+      # ==========================
+      # 生成 Release Notes
+      # ==========================
       - name: Prepare release notes
         run: |
-          TAG_NAME="${{ steps.tag.outputs.tag_name }}"
+          TAG=${{ steps.tag.outputs.tag_name }}
+
           {
-            echo "# 🎉 $TAG_NAME"
+            echo "# 🎉 $TAG"
             echo ""
             echo "## Agent Changes"
-            cat "$GITHUB_WORKSPACE/agent_changelog.txt"
-          } > "$GITHUB_WORKSPACE/release_notes.md"
+            cat agent_changelog.txt
+          } > release_notes.md
 
+      # ==========================
+      # 创建 Release
+      # ==========================
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ steps.tag.outputs.tag_name }}
           name: Release ${{ steps.tag.outputs.tag_name }}
-          body_path: ${{ github.workspace }}/release_notes.md
+          body_path: release_notes.md
           files: |
             agent-linux-amd64.tar.gz
             agent-linux-amd64.sha256
