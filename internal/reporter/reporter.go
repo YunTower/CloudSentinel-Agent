@@ -5,14 +5,18 @@ import (
 	"agent/internal/crypto"
 	"agent/internal/logger"
 	"agent/internal/websocket"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 )
 
@@ -250,7 +254,12 @@ func StartReporter(client *websocket.Client, logger *logger.Logger, cfg config.C
 					// 处理服务器命令
 					commandData, ok := jsonData["command"].(string)
 					if ok {
-						if commandData == "restart" {
+						if commandData == "service_check" {
+							checkData, ok := jsonData["data"].(map[string]interface{})
+							if ok {
+								go handleServiceCheck(client, checkData, logger)
+							}
+						} else if commandData == "restart" {
 							logger.Info("收到重启命令，准备重启...")
 							// 发送确认消息
 							response := websocket.Message{
@@ -672,5 +681,102 @@ func restartAgent(logger *logger.Logger) error {
 		time.Sleep(2 * time.Second)
 	}
 
+	return nil
+}
+
+// 处理服务检查
+func handleServiceCheck(client *websocket.Client, data map[string]interface{}, logger *logger.Logger) {
+	monitorID, _ := data["monitor_id"].(float64)
+	typ, _ := data["type"].(string)
+	target, _ := data["target"].(string)
+	port, _ := data["port"].(float64)
+	timeout, _ := data["timeout"].(float64)
+	expectStatus, _ := data["expect_status"].(float64)
+	expectBody, _ := data["expect_body"].(string)
+
+	if timeout <= 0 {
+		timeout = 10
+	}
+
+	start := time.Now()
+	var checkErr error
+
+	switch typ {
+	case "http", "https":
+		checkErr = agentCheckHTTP(target, int(timeout), int(expectStatus), expectBody)
+	case "tcp":
+		checkErr = agentCheckTCP(target, int(port), int(timeout))
+	case "udp":
+		checkErr = agentCheckUDP(target, int(port), int(timeout))
+	default:
+		checkErr = fmt.Errorf("unknown type: %s", typ)
+	}
+
+	elapsed := int(time.Since(start).Milliseconds())
+	status := "up"
+	if checkErr != nil {
+		status = "down"
+		logger.Warn("服务检测 [%d] 失败: %v", int(monitorID), checkErr)
+	}
+
+	_ = client.SendMessage(websocket.Message{
+		Type: "service_check_result",
+		Data: map[string]interface{}{
+			"monitor_id":    monitorID,
+			"status":        status,
+			"response_time": elapsed,
+		},
+	})
+}
+
+// 检查HTTP服务
+func agentCheckHTTP(target string, timeoutSec, expectStatus int, expectBody string) error {
+	c := &http.Client{
+		Timeout: time.Duration(timeoutSec) * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: false},
+		},
+	}
+	resp, err := c.Get(target)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if expectStatus > 0 {
+		if resp.StatusCode != expectStatus {
+			return fmt.Errorf("期望状态码 %d，实际 %d", expectStatus, resp.StatusCode)
+		}
+	} else if resp.StatusCode >= 500 {
+		return fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	if expectBody != "" {
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return err
+		}
+		if !strings.Contains(string(body), expectBody) {
+			return fmt.Errorf("响应体不包含期望内容")
+		}
+	}
+	return nil
+}
+
+// 检查TCP服务
+func agentCheckTCP(host string, port, timeoutSec int) error {
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", host, port), time.Duration(timeoutSec)*time.Second)
+	if err != nil {
+		return err
+	}
+	conn.Close()
+	return nil
+}
+
+// 检查UDP服务
+func agentCheckUDP(host string, port, timeoutSec int) error {
+	conn, err := net.DialTimeout("udp", fmt.Sprintf("%s:%d", host, port), time.Duration(timeoutSec)*time.Second)
+	if err != nil {
+		return err
+	}
+	conn.Close()
 	return nil
 }
