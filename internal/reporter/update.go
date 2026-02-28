@@ -321,6 +321,51 @@ func (s *UpdateService) readSHA256File(filePath string) (string, error) {
 	return sha256, nil
 }
 
+// hasPathPrefix 检查路径是否具有前缀
+func hasPathPrefix(path, prefix string) bool {
+	normalizedPath := filepath.Clean(path)
+	normalizedPrefix := filepath.Clean(prefix)
+
+	if runtime.GOOS == "windows" {
+		normalizedPath = strings.ToLower(normalizedPath)
+		normalizedPrefix = strings.ToLower(normalizedPrefix)
+	}
+
+	if normalizedPath == normalizedPrefix {
+		return true
+	}
+	return strings.HasPrefix(normalizedPath, normalizedPrefix+string(os.PathSeparator))
+}
+
+// secureArchiveTargetPath 确保归档路径安全
+func secureArchiveTargetPath(destDir, archivePath string) (string, error) {
+	if archivePath == "" {
+		return "", fmt.Errorf("归档路径为空")
+	}
+
+	cleanName := filepath.Clean(archivePath)
+	if filepath.IsAbs(cleanName) || cleanName == "." || cleanName == "" {
+		return "", fmt.Errorf("非法归档路径")
+	}
+	if cleanName == ".." || strings.HasPrefix(cleanName, ".."+string(os.PathSeparator)) {
+		return "", fmt.Errorf("归档路径试图逃逸目标目录")
+	}
+
+	destAbs, err := filepath.Abs(destDir)
+	if err != nil {
+		return "", fmt.Errorf("解析目标目录失败: %w", err)
+	}
+	targetAbs, err := filepath.Abs(filepath.Join(destDir, cleanName))
+	if err != nil {
+		return "", fmt.Errorf("解析目标路径失败: %w", err)
+	}
+	if !hasPathPrefix(targetAbs, destAbs) {
+		return "", fmt.Errorf("归档路径试图逃逸目标目录")
+	}
+
+	return targetAbs, nil
+}
+
 // extractTarGz 解压 tar.gz 文件
 func (s *UpdateService) extractTarGz(tarGzPath, destDir string) error {
 	file, err := os.Open(tarGzPath)
@@ -346,7 +391,10 @@ func (s *UpdateService) extractTarGz(tarGzPath, destDir string) error {
 			return err
 		}
 
-		target := filepath.Join(destDir, header.Name)
+		target, err := secureArchiveTargetPath(destDir, header.Name)
+		if err != nil {
+			return fmt.Errorf("非法归档条目 %q: %w", header.Name, err)
+		}
 
 		switch header.Typeflag {
 		case tar.TypeDir:
@@ -354,7 +402,10 @@ func (s *UpdateService) extractTarGz(tarGzPath, destDir string) error {
 				return err
 			}
 		case tar.TypeReg:
-			outFile, err := os.OpenFile(target, os.O_CREATE|os.O_RDWR, os.FileMode(header.Mode))
+			if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+				return err
+			}
+			outFile, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(header.Mode))
 			if err != nil {
 				return err
 			}
@@ -363,6 +414,8 @@ func (s *UpdateService) extractTarGz(tarGzPath, destDir string) error {
 				return err
 			}
 			outFile.Close()
+		case tar.TypeSymlink, tar.TypeLink:
+			return fmt.Errorf("不支持的归档条目类型: %q", header.Name)
 		}
 	}
 
