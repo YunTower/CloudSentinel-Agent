@@ -649,23 +649,14 @@ func restartAgent(logger *logger.Logger) error {
 	// 获取当前进程的PID
 	pid := os.Getpid()
 
-	// 构建重启命令
-	var cmd *exec.Cmd
-	if runtime.GOOS == "windows" {
-		// Windows: 使用cmd延迟启动
-		// 注意：添加 "run" 参数
-		cmd = exec.Command("cmd", "/C", "timeout", "/t", "2", "/nobreak", ">nul", "&", execPath, "run")
-	} else {
-		// Linux/Unix: 使用sh延迟启动
-		// 注意：添加 "run" 参数
-		cmd = exec.Command("sh", "-c", fmt.Sprintf("sleep 2 && %s run &", execPath))
-	}
+	// 构建重启命令（避免 shell 拼接，避免路径包含特殊字符导致的命令解释风险）
+	cmd := exec.Command(execPath, "run")
 
 	// 设置工作目录
 	cmd.Dir = filepath.Dir(execPath)
 
-	// 设置环境变量
-	cmd.Env = os.Environ()
+	// 固定延迟，确保旧进程有时间退出/释放资源（避免使用 env/shell）
+	time.Sleep(config.RestartStartDelay)
 
 	// 启动新进程
 	if err := cmd.Start(); err != nil {
