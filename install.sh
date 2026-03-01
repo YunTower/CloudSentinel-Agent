@@ -776,7 +776,7 @@ main() {
         fi
         
         # 设置文件权限
-        chmod 644 "$CONFIG_FILE"
+        chmod 600 "$CONFIG_FILE"
         if is_root_with_cloudsentinel_agent; then
             chown cloudsentinel-agent:root "$CONFIG_FILE"
         fi
@@ -979,4 +979,3 @@ main() {
 
 # 执行主函数
 main "$@"
-
