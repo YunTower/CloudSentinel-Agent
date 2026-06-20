@@ -6,14 +6,24 @@ import (
 	"agent/internal/system"
 	"agent/internal/version"
 	"agent/internal/websocket"
+	"bytes"
+	"compress/gzip"
 	"context"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/url"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/shirou/gopsutil/disk"
 	"github.com/shirou/gopsutil/net"
 )
+
+const reportCompressionThreshold = 1024
 
 type Collector struct {
 	System *system.System
@@ -101,7 +111,116 @@ func (c *Collector) flushLogs(logs []interface{}) {
 		Data: logs,
 	}
 	// 忽略错误，避免循环日志
-	_ = c.Client.SendMessage(message)
+	_ = c.sendMessage(message)
+}
+
+func (c *Collector) sendMessage(message websocket.Message) error {
+	message = compressReportMessage(message)
+	if err := c.Client.SendMessage(message); err == nil {
+		return nil
+	} else if fallbackErr := c.sendHTTPFallback(message); fallbackErr != nil {
+		return fmt.Errorf("websocket send failed: %v; http fallback failed: %w", err, fallbackErr)
+	}
+	return nil
+}
+
+func compressReportMessage(message websocket.Message) websocket.Message {
+	if !isCompressibleReportType(message.Type) || message.Data == nil {
+		return message
+	}
+
+	raw, err := json.Marshal(message.Data)
+	if err != nil || len(raw) < reportCompressionThreshold {
+		return message
+	}
+
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	if _, err := gw.Write(raw); err != nil {
+		_ = gw.Close()
+		return message
+	}
+	if err := gw.Close(); err != nil {
+		return message
+	}
+	if buf.Len() >= len(raw) {
+		return message
+	}
+
+	message.Data = map[string]interface{}{
+		"compressed":      true,
+		"compression":     "gzip",
+		"encoding":        "base64",
+		"original_size":   len(raw),
+		"compressed_size": buf.Len(),
+		"payload":         base64.StdEncoding.EncodeToString(buf.Bytes()),
+	}
+	return message
+}
+
+func isCompressibleReportType(reportType string) bool {
+	switch reportType {
+	case "system_info", "metrics", "memory_info", "disk_info", "disk_io", "network_info", "swap_info", "process_info", "gpu_info", "agent_log":
+		return true
+	default:
+		return false
+	}
+}
+
+func (c *Collector) sendHTTPFallback(message websocket.Message) error {
+	if c.Config.Server == "" || c.Config.Key == "" {
+		return fmt.Errorf("missing server or agent key")
+	}
+	endpoint, err := agentReportEndpoint(c.Config.Server)
+	if err != nil {
+		return err
+	}
+	payload := map[string]interface{}{
+		"agent_key": c.Config.Key,
+		"type":      message.Type,
+		"data":      message.Data,
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Post(endpoint, "application/json", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("http fallback status %d", resp.StatusCode)
+	}
+	return nil
+}
+
+func agentReportEndpoint(server string) (string, error) {
+	parsed, err := url.Parse(server)
+	if err != nil {
+		return "", err
+	}
+	switch parsed.Scheme {
+	case "ws":
+		parsed.Scheme = "http"
+	case "wss":
+		parsed.Scheme = "https"
+	case "http", "https":
+	default:
+		return "", fmt.Errorf("unsupported server scheme: %s", parsed.Scheme)
+	}
+	path := strings.TrimRight(parsed.Path, "/")
+	if strings.HasSuffix(path, "/ws/agent") {
+		path = strings.TrimSuffix(path, "/ws/agent")
+	}
+	if strings.HasSuffix(path, "/api") {
+		parsed.Path = path + "/agent/report"
+	} else {
+		parsed.Path = "/api/agent/report"
+	}
+	parsed.RawQuery = ""
+	return parsed.String(), nil
 }
 
 // SendSystemInfo 发送系统基础信息
@@ -140,7 +259,7 @@ func (c *Collector) SendSystemInfo() error {
 		Data: systemData,
 	}
 
-	return c.Client.SendMessage(message)
+	return c.sendMessage(message)
 }
 
 // getNetworkSpeed 计算网络速度（字节/秒）
@@ -324,7 +443,7 @@ func (c *Collector) SendMetrics() error {
 		Data: metricsData,
 	}
 
-	return c.Client.SendMessage(message)
+	return c.sendMessage(message)
 }
 
 // SendCPUInfo 发送详细CPU信息
@@ -356,7 +475,7 @@ func (c *Collector) SendCPUInfo() error {
 		Data: cpuData,
 	}
 
-	return c.Client.SendMessage(message)
+	return c.sendMessage(message)
 }
 
 // SendMemoryInfo 发送内存历史信息
@@ -376,7 +495,7 @@ func (c *Collector) SendMemoryInfo() error {
 		Data: memoryData,
 	}
 
-	return c.Client.SendMessage(message)
+	return c.sendMessage(message)
 }
 
 // isVirtualFilesystem 判断是否为虚拟文件系统（基于挂载点）
@@ -450,7 +569,7 @@ func (c *Collector) SendDiskInfo() error {
 		Data: diskData,
 	}
 
-	return c.Client.SendMessage(message)
+	return c.sendMessage(message)
 }
 
 // SendDiskIO 发送磁盘IO信息
@@ -468,7 +587,7 @@ func (c *Collector) SendDiskIO() error {
 		Data: diskIOData,
 	}
 
-	return c.Client.SendMessage(message)
+	return c.sendMessage(message)
 }
 
 // SendNetworkInfo 发送网络信息
@@ -518,7 +637,7 @@ func (c *Collector) SendNetworkInfo() error {
 		Data: networkData,
 	}
 
-	return c.Client.SendMessage(message)
+	return c.sendMessage(message)
 }
 
 // SendVirtualMemory 发送Swap内存信息
@@ -537,7 +656,7 @@ func (c *Collector) SendVirtualMemory() error {
 		Data: swapData,
 	}
 
-	return c.Client.SendMessage(message)
+	return c.sendMessage(message)
 }
 
 // SendProcessInfo 发送进程信息
@@ -569,7 +688,7 @@ func (c *Collector) SendProcessInfo() error {
 		Data: data,
 	}
 
-	return c.Client.SendMessage(message)
+	return c.sendMessage(message)
 }
 
 // SendGPUInfo 发送GPU信息
@@ -596,7 +715,7 @@ func (c *Collector) SendGPUInfo() error {
 		Data: data,
 	}
 
-	return c.Client.SendMessage(message)
+	return c.sendMessage(message)
 }
 
 // StartPeriodicReporting 启动周期性上报，使用 context 控制生命周期

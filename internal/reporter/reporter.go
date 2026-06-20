@@ -5,6 +5,7 @@ import (
 	"agent/internal/crypto"
 	"agent/internal/logger"
 	"agent/internal/websocket"
+	"context"
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
@@ -12,6 +13,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -42,6 +44,13 @@ type DiskIo struct {
 	WriteBytes float64 `json:"write_bytes"`
 	ReadTime   int     `json:"read_time"`
 	WriteTime  int     `json:"write_time"`
+}
+
+type pulledAgentTask struct {
+	ID        string                 `json:"id"`
+	Command   string                 `json:"command"`
+	CommandID string                 `json:"command_id"`
+	Data      map[string]interface{} `json:"data"`
 }
 
 // sendAuthMessage 发送认证消息
@@ -112,6 +121,7 @@ type ReporterCallbacks struct {
 func StartReporter(client *websocket.Client, logger *logger.Logger, cfg config.Config, callbacks ReporterCallbacks) {
 	// 使用指针以便修改配置
 	cfgPtr := &cfg
+	taskPollStarted := false
 
 	// 连接成功后立即发送认证消息
 	sendAuthMessage(client, cfgPtr, logger)
@@ -234,6 +244,10 @@ func StartReporter(client *websocket.Client, logger *logger.Logger, cfg config.C
 
 			// 发送当前配置到面板
 			sendConfigToPanel(client, cfgPtr, logger)
+			if !taskPollStarted {
+				taskPollStarted = true
+				go pollAgentTasks(client, cfgPtr, logger)
+			}
 
 			// 通知主进程认证成功，启动数据上报和心跳
 			if callbacks.OnAuthSuccess != nil {
@@ -254,7 +268,9 @@ func StartReporter(client *websocket.Client, logger *logger.Logger, cfg config.C
 					// 处理服务器命令
 					commandData, ok := jsonData["command"].(string)
 					if ok {
+						commandID, _ := jsonData["command_id"].(string)
 						if commandData == "service_check" {
+							sendCommandAck(client, commandData, commandID, logger)
 							checkData, ok := jsonData["data"].(map[string]interface{})
 							if ok {
 								go handleServiceCheck(client, checkData, logger)
@@ -508,6 +524,151 @@ func StartReporter(client *websocket.Client, logger *logger.Logger, cfg config.C
 	}
 }
 
+func sendCommandAck(client *websocket.Client, command, commandID string, logger *logger.Logger) {
+	if commandID == "" {
+		return
+	}
+	if err := client.SendMessage(websocket.Message{
+		Type: "command_ack",
+		Data: map[string]interface{}{
+			"command":    command,
+			"command_id": commandID,
+			"status":     "received",
+		},
+	}); err != nil {
+		logger.Warn("发送命令ACK失败: command=%s command_id=%s error=%v", command, commandID, err)
+	}
+}
+
+func pollAgentTasks(client *websocket.Client, cfg *config.Config, logger *logger.Logger) {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		if client.IsStopped() {
+			return
+		}
+		if err := pullAndHandleAgentTasks(cfg, logger); err != nil {
+			logger.Warn("拉取 Agent 任务失败: %v", err)
+		}
+		<-ticker.C
+	}
+}
+
+func pullAndHandleAgentTasks(cfg *config.Config, logger *logger.Logger) error {
+	endpoint, err := agentAPIEndpoint(cfg.Server, "/api/agent/tasks/pull")
+	if err != nil {
+		return err
+	}
+	var resp struct {
+		Status bool              `json:"status"`
+		Data   []pulledAgentTask `json:"data"`
+	}
+	if err := postAgentJSON(endpoint, map[string]interface{}{
+		"agent_key": cfg.Key,
+		"limit":     10,
+	}, &resp); err != nil {
+		return err
+	}
+	if !resp.Status || len(resp.Data) == 0 {
+		return nil
+	}
+
+	for _, task := range resp.Data {
+		status := "succeeded"
+		errText := ""
+		switch task.Command {
+		case "service_check":
+			result := performServiceCheck(task.Data, logger)
+			if err := postAgentReport(cfg.Server, cfg.Key, "service_check_result", result); err != nil {
+				status = "failed"
+				errText = err.Error()
+			}
+		default:
+			status = "failed"
+			errText = fmt.Sprintf("unsupported task command: %s", task.Command)
+		}
+		if err := completeAgentTask(cfg.Server, cfg.Key, task.ID, status, errText); err != nil {
+			logger.Warn("标记 Agent 任务完成失败: task_id=%s error=%v", task.ID, err)
+		}
+	}
+	return nil
+}
+
+func postAgentReport(server, key, reportType string, data interface{}) error {
+	endpoint, err := agentAPIEndpoint(server, "/api/agent/report")
+	if err != nil {
+		return err
+	}
+	return postAgentJSON(endpoint, map[string]interface{}{
+		"agent_key": key,
+		"type":      reportType,
+		"data":      data,
+	}, nil)
+}
+
+func completeAgentTask(server, key, taskID, status, errText string) error {
+	endpoint, err := agentAPIEndpoint(server, "/api/agent/tasks/complete")
+	if err != nil {
+		return err
+	}
+	return postAgentJSON(endpoint, map[string]interface{}{
+		"agent_key": key,
+		"task_id":   taskID,
+		"status":    status,
+		"error":     errText,
+	}, nil)
+}
+
+func postAgentJSON(endpoint string, payload interface{}, out interface{}) error {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Post(endpoint, "application/json", strings.NewReader(string(body)))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	if out != nil {
+		return json.NewDecoder(resp.Body).Decode(out)
+	}
+	return nil
+}
+
+func agentAPIEndpoint(server, apiPath string) (string, error) {
+	u, err := url.Parse(server)
+	if err != nil {
+		return "", err
+	}
+	switch u.Scheme {
+	case "ws":
+		u.Scheme = "http"
+	case "wss":
+		u.Scheme = "https"
+	case "http", "https":
+	default:
+		return "", fmt.Errorf("unsupported server scheme: %s", u.Scheme)
+	}
+	basePath := strings.TrimRight(u.Path, "/")
+	if strings.HasSuffix(basePath, "/ws/agent") {
+		basePath = strings.TrimSuffix(basePath, "/ws/agent")
+	}
+	if strings.HasSuffix(basePath, "/api") {
+		u.Path = strings.TrimRight(basePath, "/") + strings.TrimPrefix(apiPath, "/api")
+	} else {
+		u.Path = apiPath
+	}
+	u.RawQuery = ""
+	u.Fragment = ""
+	return u.String(), nil
+}
+
 // handleKeyExchange 处理密钥交换消息
 func handleKeyExchange(jsonData map[string]interface{}, client *websocket.Client, cfg *config.Config, logger *logger.Logger) error {
 	data, ok := jsonData["data"].(map[string]interface{})
@@ -677,13 +838,25 @@ func restartAgent(logger *logger.Logger) error {
 
 // 处理服务检查
 func handleServiceCheck(client *websocket.Client, data map[string]interface{}, logger *logger.Logger) {
+	result := performServiceCheck(data, logger)
+	_ = client.SendMessage(websocket.Message{
+		Type: "service_check_result",
+		Data: result,
+	})
+}
+
+func performServiceCheck(data map[string]interface{}, logger *logger.Logger) map[string]interface{} {
 	monitorID, _ := data["monitor_id"].(float64)
+	checkID, _ := data["check_id"].(string)
 	typ, _ := data["type"].(string)
 	target, _ := data["target"].(string)
 	port, _ := data["port"].(float64)
 	timeout, _ := data["timeout"].(float64)
 	expectStatus, _ := data["expect_status"].(float64)
 	expectBody, _ := data["expect_body"].(string)
+	httpMethod, _ := data["http_method"].(string)
+	httpHeaders, _ := data["http_headers"].(string)
+	httpBody, _ := data["http_body"].(string)
 
 	if timeout <= 0 {
 		timeout = 10
@@ -694,41 +867,67 @@ func handleServiceCheck(client *websocket.Client, data map[string]interface{}, l
 
 	switch typ {
 	case "http", "https":
-		checkErr = agentCheckHTTP(target, int(timeout), int(expectStatus), expectBody)
+		checkErr = agentCheckHTTP(target, int(timeout), int(expectStatus), expectBody, httpMethod, httpHeaders, httpBody)
 	case "tcp":
 		checkErr = agentCheckTCP(target, int(port), int(timeout))
 	case "udp":
 		checkErr = agentCheckUDP(target, int(port), int(timeout))
+	case "icmp", "ping":
+		checkErr = agentCheckICMP(target, int(timeout))
+	case "dns":
+		checkErr = agentCheckDNS(target, int(timeout))
+	case "tls":
+		checkErr = agentCheckTLS(target, int(port), int(timeout))
 	default:
 		checkErr = fmt.Errorf("unknown type: %s", typ)
 	}
 
 	elapsed := int(time.Since(start).Milliseconds())
 	status := "up"
+	errText := ""
 	if checkErr != nil {
 		status = "down"
+		errText = checkErr.Error()
 		logger.Warn("服务检测 [%d] 失败: %v", int(monitorID), checkErr)
 	}
 
-	_ = client.SendMessage(websocket.Message{
-		Type: "service_check_result",
-		Data: map[string]interface{}{
-			"monitor_id":    monitorID,
-			"status":        status,
-			"response_time": elapsed,
-		},
-	})
+	return map[string]interface{}{
+		"monitor_id":    monitorID,
+		"check_id":      checkID,
+		"status":        status,
+		"response_time": elapsed,
+		"error":         errText,
+	}
 }
 
 // 检查HTTP服务
-func agentCheckHTTP(target string, timeoutSec, expectStatus int, expectBody string) error {
+func agentCheckHTTP(target string, timeoutSec, expectStatus int, expectBody, method, headersJSON, requestBody string) error {
 	c := &http.Client{
 		Timeout: time.Duration(timeoutSec) * time.Second,
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: false},
 		},
 	}
-	resp, err := c.Get(target)
+	method = normalizeRequestMethod(method)
+	var body io.Reader
+	if requestBody != "" && methodAllowsBody(method) {
+		body = strings.NewReader(requestBody)
+	}
+	req, err := http.NewRequest(method, target, body)
+	if err != nil {
+		return err
+	}
+	headers, err := parseHTTPHeaders(headersJSON)
+	if err != nil {
+		return err
+	}
+	for key, value := range headers {
+		req.Header.Set(key, value)
+	}
+	if requestBody != "" && methodAllowsBody(method) && req.Header.Get("Content-Type") == "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := c.Do(req)
 	if err != nil {
 		return err
 	}
@@ -752,6 +951,41 @@ func agentCheckHTTP(target string, timeoutSec, expectStatus int, expectBody stri
 	return nil
 }
 
+func normalizeRequestMethod(method string) string {
+	switch strings.ToUpper(strings.TrimSpace(method)) {
+	case "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS":
+		return strings.ToUpper(strings.TrimSpace(method))
+	default:
+		return "GET"
+	}
+}
+
+func methodAllowsBody(method string) bool {
+	switch method {
+	case "POST", "PUT", "PATCH", "DELETE":
+		return true
+	default:
+		return false
+	}
+}
+
+func parseHTTPHeaders(raw string) (map[string]string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return map[string]string{}, nil
+	}
+	headers := map[string]string{}
+	if err := json.Unmarshal([]byte(raw), &headers); err != nil {
+		return nil, fmt.Errorf("http headers must be a JSON object: %w", err)
+	}
+	for key := range headers {
+		if strings.TrimSpace(key) == "" {
+			return nil, fmt.Errorf("http header name cannot be empty")
+		}
+	}
+	return headers, nil
+}
+
 // 检查TCP服务
 func agentCheckTCP(host string, port, timeoutSec int) error {
 	conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", host, port), time.Duration(timeoutSec)*time.Second)
@@ -770,4 +1004,130 @@ func agentCheckUDP(host string, port, timeoutSec int) error {
 	}
 	conn.Close()
 	return nil
+}
+
+func agentCheckICMP(target string, timeoutSec int) error {
+	if timeoutSec <= 0 {
+		timeoutSec = 10
+	}
+	host, _, err := splitMonitorTarget(target, 0)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutSec)*time.Second)
+	defer cancel()
+
+	args := []string{"-c", "1", "-W", fmt.Sprintf("%d", timeoutSec), host}
+	if runtime.GOOS == "windows" {
+		args = []string{"-n", "1", "-w", fmt.Sprintf("%d", timeoutSec*1000), host}
+	}
+	cmd := exec.CommandContext(ctx, "ping", args...)
+	output, err := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		return fmt.Errorf("ping timeout")
+	}
+	if err != nil {
+		msg := strings.TrimSpace(string(output))
+		if msg == "" {
+			msg = err.Error()
+		}
+		return fmt.Errorf("ping failed: %s", msg)
+	}
+	return nil
+}
+
+func agentCheckDNS(target string, timeoutSec int) error {
+	if timeoutSec <= 0 {
+		timeoutSec = 10
+	}
+	host, _, err := splitMonitorTarget(target, 0)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutSec)*time.Second)
+	defer cancel()
+
+	ips, err := net.DefaultResolver.LookupHost(ctx, host)
+	if err != nil {
+		return fmt.Errorf("dns lookup failed: %w", err)
+	}
+	if len(ips) == 0 {
+		return fmt.Errorf("dns lookup returned no records")
+	}
+	return nil
+}
+
+func agentCheckTLS(target string, port, timeoutSec int) error {
+	if timeoutSec <= 0 {
+		timeoutSec = 10
+	}
+	host, resolvedPort, err := splitMonitorTarget(target, 443)
+	if err != nil {
+		return err
+	}
+	if port > 0 {
+		resolvedPort = port
+	}
+
+	dialer := &net.Dialer{Timeout: time.Duration(timeoutSec) * time.Second}
+	conn, err := tls.DialWithDialer(dialer, "tcp", fmt.Sprintf("%s:%d", host, resolvedPort), &tls.Config{
+		ServerName: host,
+		MinVersion: tls.VersionTLS12,
+	})
+	if err != nil {
+		return fmt.Errorf("tls connection failed: %w", err)
+	}
+	defer conn.Close()
+
+	state := conn.ConnectionState()
+	if len(state.PeerCertificates) == 0 {
+		return fmt.Errorf("tls certificate not found")
+	}
+	cert := state.PeerCertificates[0]
+	now := time.Now()
+	if now.Before(cert.NotBefore) {
+		return fmt.Errorf("tls certificate not valid before %s", cert.NotBefore.Format(time.RFC3339))
+	}
+	if now.After(cert.NotAfter) {
+		return fmt.Errorf("tls certificate expired at %s", cert.NotAfter.Format(time.RFC3339))
+	}
+	return nil
+}
+
+func splitMonitorTarget(target string, defaultPort int) (string, int, error) {
+	value := strings.TrimSpace(target)
+	if value == "" {
+		return "", 0, fmt.Errorf("target is empty")
+	}
+
+	if strings.Contains(value, "://") {
+		parsed, err := url.Parse(value)
+		if err != nil {
+			return "", 0, err
+		}
+		host := parsed.Hostname()
+		if host == "" {
+			return "", 0, fmt.Errorf("target host is empty")
+		}
+		port := defaultPort
+		if parsed.Port() != "" {
+			if _, err := fmt.Sscanf(parsed.Port(), "%d", &port); err != nil {
+				return "", 0, fmt.Errorf("invalid target port")
+			}
+		}
+		return host, port, nil
+	}
+
+	host := value
+	port := defaultPort
+	if h, p, err := net.SplitHostPort(value); err == nil {
+		host = h
+		if _, err := fmt.Sscanf(p, "%d", &port); err != nil {
+			return "", 0, fmt.Errorf("invalid target port")
+		}
+	}
+	if host == "" {
+		return "", 0, fmt.Errorf("target host is empty")
+	}
+	return host, port, nil
 }
